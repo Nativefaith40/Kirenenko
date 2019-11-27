@@ -1,14 +1,6 @@
-
 ##########
 # added by user
 #########
-fun:dfsan_mark_signed=uninstrumented
-fun:dfsan_mark_signed=discard
-fun:dfsan_combine_and_ins=uninstrumented
-fun:dfsan_combine_and_ins=discard
-fun:dfsan_infer_shape_in_math_op=uninstrumented
-fun:dfsan_infer_shape_in_math_op=discard
-
 fun:log10=functional
 fun:__ctype_toupper_loc=discard
 fun:isatty=discard
@@ -83,10 +75,21 @@ fun:dfsan_shadow_for=discard
 # fun:dfsan_fun_fini=uninstrumented
 # fun:dfsan_fun_fini=discard
 
+###############################################################################
+# libunwind
+###############################################################################
+
+fun:unw_getcontext=uninstrumented
+fun:unw_getcontext=discard
+fun:_ZN9libunwind13Registers_x866jumptoEv=uninstrumented
+fun:_ZN9libunwind13Registers_x866jumptoEv=discard
+fun:_ZN9libunwind16Registers_x86_646jumptoEv=uninstrumented
+fun:_ZN9libunwind16Registers_x86_646jumptoEv=discard
 
 ###############################################################################
 # glibc
 ###############################################################################
+
 # fun:malloc=discard
 # fun:realloc=discard
 # fun:free=discard
@@ -159,6 +162,7 @@ fun:fputc=discard
 fun:fputs=discard
 fun:fputs_unlocked=discard
 fun:fseek=discard
+fun:fseeko64=discard
 fun:ftell=discard
 fun:fwrite=discard
 fun:getenv=discard
@@ -166,12 +170,14 @@ fun:getuid=discard
 fun:geteuid=discard
 fun:getpagesize=discard
 fun:getpid=discard
+fun:gettext=discard
 fun:kill=discard
 fun:listen=discard
 fun:lseek=discard
 fun:mkdir=discard
 # fun:mmap=discard
 # fun:munmap=discard
+fun:ngettext=discard
 # fun:open=discard
 fun:pipe=discard
 fun:posix_fadvise=discard
@@ -322,7 +328,6 @@ fun:reflect.MakeFuncStubGo=discard
 fun:reflect.makeFuncStub=uninstrumented
 fun:reflect.makeFuncStub=discard
 
-
 ###############################################################################
 # lib/Fuzzer
 ###############################################################################
@@ -366,3 +371,12 @@ fun:__sanitizer_cov_pcs_init=discard
 # Ignores the dfsan wrappers.
 fun:__dfsw_*=uninstrumented
 fun:__dfsw_*=discard
+
+# Ignores taint wrappers.
+fun:__taint_*=uninstrumented
+fun:__taint_*=discard
+
+# Don't add extra parameters to the Fuzzer callback.
+fun:LLVMFuzzerTestOneInput=uninstrumented
+fun:__afl_manual_init=uninstrumented
+fun:__afl_manual_init=discard

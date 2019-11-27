@@ -38,6 +38,7 @@
   __sanitizer_symbolize_global;
   __sanitizer_symbolize_pc;
   __sanitizer_update_counter_bitset_and_clear_counters;
+  __taint_*
   dfsan_*;
   mmap;
   mmap64;

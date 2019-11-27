@@ -46,7 +46,7 @@ p.add_option('--libgcc-dso-path', metavar='PATH',
              default='/lib/x86_64-linux-gnu')
 p.add_option('--libgcc-archive-path', metavar='PATH',
              help='path to libgcc archive directory',
-             default='/usr/lib/gcc/x86_64-linux-gnu/4.6')
+             default='/usr/lib/gcc/x86_64-linux-gnu/7.4.0')
 
 p.add_option('--with-libstdcxx', action='store_true',
              dest='with_libstdcxx',

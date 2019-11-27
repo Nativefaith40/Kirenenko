@@ -30,3 +30,6 @@ DFSAN_FLAG(
 DFSAN_FLAG(const char *, dump_labels_at_exit, "", "The path of the file where "
                                                   "to dump the labels when the "
                                                   "program terminates.")
+DFSAN_FLAG(const char *, taint_file, "", "The path of the file which "
+                                         "will be tainted.")
+DFSAN_FLAG(const char *, union_table, "union.txt", "union table.")

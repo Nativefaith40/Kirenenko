@@ -4,13 +4,20 @@
 set(DFSAN_RTL_SOURCES
   dfsan.cc
   dfsan_custom.cc
-  dfsan_interceptors.cc)
+  dfsan_interceptors.cc
+  taint_allocator.cc
+  union_util.cc
+  union_hashtable.cc)
 
 set(DFSAN_RTL_HEADERS
   dfsan.h
   dfsan_flags.inc
-  dfsan_platform.h)
+  dfsan_platform.h
+  taint_allocator.h
+  union_util.h
+  union_hashtable.h)
 
+list(APPEND ${SANITIZER_COMMON_CFLAGS} "-O3")
 set(DFSAN_COMMON_CFLAGS ${SANITIZER_COMMON_CFLAGS})
 
 append_rtti_flag(OFF DFSAN_COMMON_CFLAGS)
@@ -51,10 +58,20 @@ add_custom_command(OUTPUT ${dfsan_abilist_filename}
                     ${CMAKE_COMMAND} -E make_directory ${dfsan_abilist_dir}
                    COMMAND
                      cat ${CMAKE_CURRENT_SOURCE_DIR}/done_abilist.txt
-                         ${CMAKE_CURRENT_SOURCE_DIR}/libc_ubuntu1404_abilist.txt
+                         ${CMAKE_CURRENT_SOURCE_DIR}/libc_ubuntu1804_abilist.txt
                          > ${dfsan_abilist_filename}
-                   DEPENDS done_abilist.txt libc_ubuntu1404_abilist.txt)
+                   DEPENDS done_abilist.txt libc_ubuntu1804_abilist.txt)
 add_dependencies(dfsan dfsan_abilist)
 install(FILES ${dfsan_abilist_filename}
         DESTINATION ${ANGORA_RULE_DIR})
 
+set(taint_linker_script_filename ${COMPILER_RT_OUTPUT_DIR}/taint.ld)
+add_custom_target(taint_linker_script ALL
+  DEPENDS ${taint_linker_script_filename})
+add_custom_command(OUTPUT ${taint_linker_script_filename}
+                   VERBATIM
+                   COMMAND
+                     cat ${CMAKE_CURRENT_SOURCE_DIR}/taint.ld
+                         > ${taint_linker_script_filename}
+                   DEPENDS taint.ld)
+add_dependencies(dfsan taint_linker_script)
