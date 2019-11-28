@@ -70,10 +70,10 @@ fun:dfsan_set_write_callback=uninstrumented
 fun:dfsan_set_write_callback=custom
 fun:dfsan_shadow_for=discard
 
-# fun:dfsan_fun_init=uninstrumented
-# fun:dfsan_fun_init=discard
-# fun:dfsan_fun_fini=uninstrumented
-# fun:dfsan_fun_fini=discard
+fun:dfsan_fun_init=uninstrumented
+fun:dfsan_fun_init=discard
+fun:dfsan_fun_fini=uninstrumented
+fun:dfsan_fun_fini=discard
 
 ###############################################################################
 # libunwind
@@ -90,9 +90,9 @@ fun:_ZN9libunwind16Registers_x86_646jumptoEv=discard
 # glibc
 ###############################################################################
 
-# fun:malloc=discard
-# fun:realloc=discard
-# fun:free=discard
+fun:malloc=discard
+fun:realloc=discard
+fun:free=discard
 
 # Functions that return a value that depends on the input, but the output might
 # not be necessarily data-dependent on the input.
@@ -145,17 +145,17 @@ fun:alarm=discard
 fun:atexit=discard
 fun:bind=discard
 fun:chdir=discard
-# fun:close=discard
+fun:close=discard
 fun:closedir=discard
 fun:connect=discard
 fun:dladdr=discard
 fun:dlclose=discard
-# fun:fclose=discard
+fun:fclose=discard
 fun:feof=discard
 fun:ferror=discard
 fun:fflush=discard
 fun:fileno=discard
-# fun:fopen=discard
+fun:fopen=discard
 fun:fprintf=discard
 fun:fputc=discard
 fun:fputc=discard
@@ -175,10 +175,10 @@ fun:kill=discard
 fun:listen=discard
 fun:lseek=discard
 fun:mkdir=discard
-# fun:mmap=discard
-# fun:munmap=discard
+fun:mmap=discard
+fun:munmap=discard
 fun:ngettext=discard
-# fun:open=discard
+fun:open=discard
 fun:pipe=discard
 fun:posix_fadvise=discard
 fun:posix_memalign=discard
@@ -235,11 +235,14 @@ fun:time=custom
 
 # Functions that produce an output that depend on the input (propagate the
 # shadow manually).
+fun:__strdup=custom
+fun:__strndup=custom
 fun:ctime_r=custom
 fun:inet_pton=custom
 fun:localtime_r=custom
 fun:memcpy=custom
 fun:memset=custom
+fun:strcat=custom
 fun:strcpy=custom
 fun:strdup=custom
 fun:strncpy=custom
@@ -284,6 +287,36 @@ fun:snprintf=custom
 # TODO: custom
 fun:asprintf=discard
 fun:qsort=discard
+
+### synfuzz
+fun:__fxstat=custom
+fun:__getdelim=custom
+fun:__lxstat=custom
+fun:__xstat=custom
+fun:_IO_getc=custom
+fun:close=custom
+fun:fclose=custom
+fun:fgetc=custom
+fun:fgetc_unlocked=custom
+fun:fgets_unlocked=custom
+fun:fopen=custom
+fun:fopen64=custom
+fun:fread=custom
+fun:fread_unlocked=custom
+fun:getc=custom
+fun:getdelim=custom
+fun:getline=custom
+fun:gets=custom
+fun:lstat=custom
+fun:mmap=custom
+fun:munmap=custom
+fun:mmap2=custom
+fun:open=custom
+
+# for LAVA
+fun:utmpxname=custom
+fun:getutxent=custom
+fun:setutxent=custom
 
 ###############################################################################
 # pthread

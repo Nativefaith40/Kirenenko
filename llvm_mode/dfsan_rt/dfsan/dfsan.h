@@ -55,7 +55,7 @@ struct taint_file {
   int fd;
   off_t offset;
   dfsan_label label;
-  long size;
+  off_t size;
   int is_utmp;
 };
 
@@ -65,11 +65,11 @@ void dfsan_set_label(dfsan_label label, void *addr, uptr size);
 dfsan_label dfsan_read_label(const void *addr, uptr size);
 void dfsan_store_label(dfsan_label l1, void *addr, uptr size);
 dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size);
-dfsan_label dfsan_create_label(void);
+dfsan_label dfsan_create_label(off_t offset);
 
 // taint source
 void taint_set_file(const char *filename, int fd);
-int taint_get_file(int fd);
+off_t taint_get_file(int fd);
 void taint_close_file(int fd);
 int is_taint_file(const char *filename);
 

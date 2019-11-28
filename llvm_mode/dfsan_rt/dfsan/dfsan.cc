@@ -316,12 +316,14 @@ dfsan_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
-dfsan_label dfsan_create_label() {
+dfsan_label dfsan_create_label(off_t offset) {
   dfsan_label label =
     atomic_fetch_add(&__dfsan_last_label, 1, memory_order_relaxed) + 1;
   dfsan_check_label(label);
   internal_memset(&__dfsan_label_info[label], 0, sizeof(dfsan_label_info));
   __dfsan_label_info[label].size = 1;
+  // label may not equal to offset when using stdin
+  __dfsan_label_info[label].op1 = offset;  
   return label;
 }
 
@@ -486,11 +488,11 @@ is_taint_file(const char *filename) {
   return 0;
 }
 
-SANITIZER_INTERFACE_ATTRIBUTE int
+SANITIZER_INTERFACE_ATTRIBUTE off_t
 taint_get_file(int fd) {
   AOUT("fd: %d\n", fd);
   AOUT("tainted.fd: %d\n", tainted.fd);
-  return tainted.fd == fd;
+  return tainted.fd == fd ? tainted.size : 0;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE void
@@ -533,12 +535,13 @@ static void RegisterDfsanFlags(FlagParser *parser, Flags *f) {
 static void InitializeTaintFile() {
   for (long i = 1; i < CONST_OFFSET; i++) {
     // for synthesis
-    dfsan_label label = dfsan_create_label();
+    dfsan_label label = dfsan_create_label(i);
     assert(label == i);
   }
   const char *filename = flags().taint_file;
   if (internal_strcmp(filename, "stdin") == 0) {
     tainted.fd = 0;
+    tainted.size = 1;
   } else if (internal_strcmp(filename, "") == 0) {
     tainted.fd = -1;
   }
@@ -547,8 +550,8 @@ static void InitializeTaintFile() {
     struct stat st;
     stat(filename, &st);
     tainted.size = st.st_size;
-    for (long int i = 0; i < tainted.size; i++) {
-      dfsan_label label = dfsan_create_label();
+    for (off_t i = 0; i < tainted.size; i++) {
+      dfsan_label label = dfsan_create_label(i);
       dfsan_check_label(label);
     }
     AOUT("%s %lld size\n", filename, tainted.size);
