@@ -578,8 +578,6 @@ bool Taint::doInitialization(Module &M) {
   Type *TaintUnionStoreArgs[3] = { ShadowTy, ShadowPtrTy, IntptrTy };
   TaintUnionStoreFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintUnionStoreArgs, /*isVarArg=*/ false);
-  //TaintStoreShadowFnTy =
-  //  FunctionType::get(Type::getVoidTy(*Ctx),{IntptrTy, IntptrTy, ShadowTy}, false);
   TaintUnimplementedFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), Type::getInt8PtrTy(*Ctx), /*isVarArg=*/false);
   Type *TaintSetLabelArgs[3] = { ShadowTy, Type::getInt8PtrTy(*Ctx), IntptrTy };
@@ -755,15 +753,6 @@ bool Taint::runOnModule(Module &M) {
     F->addParamAttr(1, Attribute::ZExt);
   }
 
-  // TaintStoreShadowFn = Mod->getOrInsertFunction("__taint_store_shadow", TaintStoreShadowFnTy);
-  // if (Function *F = dyn_cast<Function>(TaintStoreShadowFn)) {
-  //   F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
-  //   F->addAttribute(AttributeList::FunctionIndex, Attribute::ReadNone);
-  //   F->addParamAttr(0, Attribute::ZExt);
-  //   F->addParamAttr(1, Attribute::ZExt);
-  //   F->addParamAttr(2, Attribute::ZExt);
-  // }
-
   TaintCheckedUnionFn = Mod->getOrInsertFunction("taint_union", TaintUnionFnTy);
   if (Function *F = dyn_cast<Function>(TaintCheckedUnionFn)) {
     F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
@@ -774,7 +763,7 @@ bool Taint::runOnModule(Module &M) {
   }
 
   TaintUnionLoadFn =
-      Mod->getOrInsertFunction("__dfsan_union_load", TaintUnionLoadFnTy);
+      Mod->getOrInsertFunction("__taint_union_load", TaintUnionLoadFnTy);
   if (Function *F = dyn_cast<Function>(TaintUnionLoadFn)) {
     F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
     F->addAttribute(AttributeList::FunctionIndex, Attribute::ReadOnly);
@@ -782,7 +771,7 @@ bool Taint::runOnModule(Module &M) {
   }
 
   TaintUnionStoreFn =
-      Mod->getOrInsertFunction("__dfsan_union_store", TaintUnionStoreFnTy);
+      Mod->getOrInsertFunction("__taint_union_store", TaintUnionStoreFnTy);
   if (Function *F = dyn_cast<Function>(TaintUnionStoreFn)) {
     F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
     F->addParamAttr(0, Attribute::ZExt);
@@ -805,15 +794,6 @@ bool Taint::runOnModule(Module &M) {
 
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
-
-  GlobalVariable *II = Mod->getGlobalVariable("__fuzzer_instance_id");
-
-  if (!II) {
-    II = new GlobalVariable(*Mod, PointerType::get(Int32Ty, 0), false,
-                            GlobalValue::CommonLinkage,
-                            Constant::getNullValue(PointerType::get(Int32Ty, 0)),
-                            "__fuzzer_instance_id");
-  }
 
   std::vector<Function *> FnsToInstrument;
   SmallPtrSet<Function *, 2> FnsWithNativeABI;

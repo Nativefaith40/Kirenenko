@@ -435,9 +435,9 @@ void serialize(dfsan_label label, FILE *fp) {
     serialize(__dfsan_label_info[label].l2, fp);
 }
 
-extern u32* __fuzzer_branch_id;
-extern u32* __fuzzer_target_id;
-extern u32* __fuzzer_instance_id;
+u32 __fuzzer_branch_id = 0;
+u32 __fuzzer_target_id = 0;
+u32 __fuzzer_instance_id = 0;
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, int predicate,
@@ -446,12 +446,12 @@ __taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, int predicate,
     return;
 
   char buf[64];
-  u32 target = *__fuzzer_target_id;
+  u32 target = __fuzzer_target_id;
   internal_snprintf(buf, sizeof(buf), "union-%d-%d.txt",
-          *__fuzzer_instance_id, target);
+          __fuzzer_instance_id, target);
   FILE *fp = fopen(buf, "a");
   if (fp) {
-    fprintf(fp, "##### %u\n", *__fuzzer_branch_id);
+    fprintf(fp, "##### %u\n", __fuzzer_branch_id);
     fprintf(fp, "%u %u %u %u %llu %llu\n",
             op1, op2, size, predicate, c1, c2);
     serialize(op1, fp);
