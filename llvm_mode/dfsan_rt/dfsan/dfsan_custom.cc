@@ -1268,8 +1268,10 @@ __dfsw_fopen64(const char *filename, const char *mode,
                dfsan_label filename_label, dfsan_label mode_label,
                dfsan_label *ret_label) {
   FILE *ret = fopen64(filename, mode);
-  if (ret)
+  if (ret) {
+    AOUT("%d fd is fopened\n", fileno(ret));
     taint_set_file(filename, fileno(ret));
+  }
   *ret_label = 0;
   return ret;
 }
