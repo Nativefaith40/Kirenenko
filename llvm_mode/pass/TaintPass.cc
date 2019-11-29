@@ -1304,13 +1304,13 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   Value *Op1 = I->getOperand(0);
   if (!Op1->getType()->isIntegerTy())
     return;
+  unsigned size = DL.getTypeSizeInBits(Op1->getType());
+  ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   Value *Op2 = I->getOperand(1);
   Value *Op1Shadow = getShadow(Op1);
   Value *Op2Shadow = getShadow(Op2);
   Op1 = IRB.CreateZExtOrTrunc(Op1, TT.Int64Ty);
   Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
-  unsigned size = DL.getTypeSizeInBits(Op1->getType());
-  ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   // get predicate
   int predicate = I->getPredicate();
   ConstantInt *Predicate = ConstantInt::get(TT.ShadowTy, predicate);
