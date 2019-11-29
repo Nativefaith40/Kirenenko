@@ -26,6 +26,7 @@
 #include "../sanitizer_common/sanitizer_flag_parser.h"
 #include "../sanitizer_common/sanitizer_libc.h"
 #include "../sanitizer_common/sanitizer_mutex.h"
+#include "../sanitizer_common/sanitizer_posix.h"
 
 #include "dfsan.h"
 #include "taint_allocator.h"
@@ -35,9 +36,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <assert.h>
+#include <fcntl.h>
 
 #include <z3++.h>
 
@@ -120,8 +124,11 @@ static void dfsan_check_label(dfsan_label label) {
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size,
                           u64 op1, u64 op2) {
-  if (l1 > l2 && is_commutative(op))
+  if (l1 > l2 && is_commutative(op)) {
+    // needs to swap both labels and concretes
     Swap(l1, l2);
+    Swap(op1, op2);
+  }
   if (l1 == 0 && l2 < CONST_OFFSET) return 0;
   if (l2 == kInitializingLabel) return kInitializingLabel;
 
@@ -433,7 +440,8 @@ static z3::expr serialize(dfsan_label label) {
   }
   
   dfsan_label_info *info = &__dfsan_label_info[label];
-  AOUT("%u %u %u %u %u\n", label, info->l1, info->l2, info->op, info->size);
+  AOUT("%u %u %u %u %u %llu %llu\n", label, info->l1, info->l2,
+       info->op, info->size, info->op1, info->op2);
 
   // special ops
   if (info->op == 0) {
@@ -529,10 +537,11 @@ __taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
     return;
 
   AOUT("solving: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
+  bool pushed = false;
   try {
     z3::expr bv_c1 = __z3_context.bv_val((uint64_t)c1, size * 8);
     z3::expr bv_c2 = __z3_context.bv_val((uint64_t)c2, size * 8);
-    z3::expr result = get_cmd(bv_c1, bv_c2, predicate);
+    z3::expr result = get_cmd(bv_c1, bv_c2, predicate).simplify();
 
     z3::expr lhs = bv_c1, rhs = bv_c2;
     if (op1 != 0) lhs = serialize(op1);
@@ -540,26 +549,60 @@ __taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
     z3::expr pe = get_cmd(lhs, rhs, predicate);
 
     __z3_solver.push();
+    pushed = true;
     __z3_solver.add(pe != result);
     z3::check_result res = __z3_solver.check();
 
+    //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
     if (res == z3::sat) {
       AOUT("branch solved\n");
-#if 0
-      char path[MAX_PATH];
-      internal_snprintf(path, MAX_PATH, "%s/id-%d-%d-%d", __output_dir,
-                        __instance_id, __session_id, __current_index);
-      int fd = open(buf, "wb");
-      close(fd);
-#endif
+
+      char path[PATH_MAX];
+      internal_snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", __output_dir,
+                        __instance_id, __session_id, __current_index++);
+      fd_t fd = OpenFile(path, WrOnly);
+      if (fd == kInvalidFd) {
+        throw z3::exception("failed to open new input file for write");
+      }
+
+      if (tainted.fd != 0) {
+        if (!WriteToFile(fd, tainted.buf, tainted.size)) {
+          throw z3::exception("failed to copy original input\n");
+        }
+      } else {
+        // FIXME input is stdin
+        throw z3::exception("original input is stdin");
+      }
+
+      // from qsym
+      z3::model m = __z3_solver.get_model();
+      unsigned num_constants = m.num_consts();
+      for (unsigned i = 0; i < num_constants; i++) {
+        z3::func_decl decl = m.get_const_decl(i);
+        z3::expr e = m.get_const_interp(decl);
+        z3::symbol name = decl.name();
+
+        if (name.kind() == Z3_INT_SYMBOL) {
+          u8 value = (u8)e.get_numeral_int();
+          internal_lseek(fd, name.to_int(), SEEK_SET);
+          WriteToFile(fd, &value, sizeof(value));
+        }
+      }
+
+      CloseFile(fd);
+    } else if (res == z3::unsat) {
+      AOUT("branch not solvable\n");
     }
 
     __z3_solver.pop();
+    pushed = false;
     // nested branch
     __z3_solver.add(pe == result);
   } catch (z3::exception e) {
     Report("WARNING: solving error: %s\n", e.msg());
   }
+  
+  if (pushed) __z3_solver.pop();
 
 }
 
@@ -655,13 +698,23 @@ static void InitializeTaintFile() {
     tainted.fd = -1;
   }
   else {
-    realpath(filename, tainted.filename);
+    if (!realpath(filename, tainted.filename)) {
+      Report("WARNING: failed to get to real path for taint file\n");
+      return;
+    }
     struct stat st;
     stat(filename, &st);
     tainted.size = st.st_size;
     for (off_t i = 0; i < tainted.size; i++) {
       dfsan_label label = dfsan_create_label(i);
       dfsan_check_label(label);
+    }
+    // map a copy
+    tainted.buf = static_cast<char *>(
+      MapFileToMemory(filename, &tainted.buf_size));
+    if (tainted.buf == nullptr) {
+      Printf("FATAL: failed to map a copy of input file\n");
+      Die();
     }
     AOUT("%s %lld size\n", filename, tainted.size);
   }
@@ -709,6 +762,9 @@ static void dfsan_fini() {
            flags().dump_labels_at_exit);
     dfsan_dump_labels(fd);
     CloseFile(fd);
+  }
+  if (tainted.buf) {
+    UnmapOrDie(tainted.buf, tainted.buf_size);
   }
 }
 

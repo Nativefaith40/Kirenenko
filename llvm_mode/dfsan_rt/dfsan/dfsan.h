@@ -57,6 +57,8 @@ struct taint_file {
   dfsan_label label;
   off_t size;
   int is_utmp;
+  char *buf;
+  uptr buf_size;
 };
 
 extern "C" {
