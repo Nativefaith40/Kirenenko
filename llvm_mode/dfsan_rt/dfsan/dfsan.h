@@ -142,16 +142,16 @@ enum operators {
 };
 
 enum predicate {
-  bveq,
-  bvneq,
-  bvslt,
-  bvult,
-  bvsle,
-  bvule,
-  bvsgt,
-  bvugt,
-  bvsge,
-  bvuge
+  bveq = 32,
+  bvneq = 33,
+  bvugt = 34,
+  bvuge = 35,
+  bvult = 36,
+  bvule = 37,
+  bvsgt = 38,
+  bvsge = 39,
+  bvslt = 40,
+  bvsle = 41
 };
 
 static inline bool is_commutative(unsigned char op) {

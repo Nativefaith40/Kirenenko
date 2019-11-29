@@ -39,6 +39,8 @@
 #include <sys/stat.h>
 #include <assert.h>
 
+#include <z3++.h>
+
 using namespace __dfsan;
 
 typedef atomic_uint32_t atomic_dfsan_label;
@@ -53,7 +55,15 @@ static struct taint_file tainted;
 // Hash table
 static const uptr hashtable_size = (1ULL << 32);
 static const size_t union_table_size = (1ULL << 18);
-__taint::union_hashtable __union_table(union_table_size);
+static __taint::union_hashtable __union_table(union_table_size);
+
+// for output
+static const char* __output_dir;
+static u32 __instance_id;
+static u32 __session_id;
+static u64 __current_index = 0;
+static z3::context __z3_context;
+static z3::solver __z3_solver(__z3_context, "QF_BV");
 
 Flags __dfsan::flags_data;
 
@@ -416,48 +426,141 @@ dfsan_dump_labels(int fd) {
   }
 }
 
-void serialize(dfsan_label label, FILE *fp) {
-  if (label < CONST_OFFSET || label == kInitializingLabel)
-    return;
-  AOUT("%u %u %u %u %u\n", label, __dfsan_label_info[label].l1,
-                           __dfsan_label_info[label].l2,
-                           __dfsan_label_info[label].op,
-                           __dfsan_label_info[label].size);
-  fprintf(fp, "%u %u %u %u %u %llu %llu\n", label,
-          __dfsan_label_info[label].l1,
-          __dfsan_label_info[label].l2,
-          __dfsan_label_info[label].op,
-          __dfsan_label_info[label].size,
-          __dfsan_label_info[label].op1,
-          __dfsan_label_info[label].op2);
-  serialize(__dfsan_label_info[label].l1, fp);
-  if (__dfsan_label_info[label].op != bvload)
-    serialize(__dfsan_label_info[label].l2, fp);
+static z3::expr serialize(dfsan_label label) {
+  if (label < CONST_OFFSET || label == kInitializingLabel) {
+    Report("WARNING: invalid label: %d\n", label);
+    throw z3::exception("invalid label");
+  }
+  
+  dfsan_label_info *info = &__dfsan_label_info[label];
+  AOUT("%u %u %u %u %u\n", label, info->l1, info->l2, info->op, info->size);
+
+  // special ops
+  if (info->op == 0) {
+    // input
+    z3::symbol symbol = __z3_context.int_symbol(info->op1);
+    z3::sort sort = __z3_context.bv_sort(8);
+    return __z3_context.constant(symbol, sort);
+  } else if (info->op == bvload) {
+    u64 offset = __dfsan_label_info[info->l1].op1;
+    z3::symbol symbol = __z3_context.int_symbol(offset);
+    z3::sort sort = __z3_context.bv_sort(8);
+    z3::expr out = __z3_context.constant(symbol, sort);
+    for (u32 i = 1; i < info->l2; i++) {
+      symbol = __z3_context.int_symbol(offset + i);
+      out = z3::concat(__z3_context.constant(symbol, sort), out);
+    }
+    return out;
+  } else if (info->op == bvzext) {
+    z3::expr base = serialize(info->l2);
+    u32 base_size = base.get_sort().bv_size();
+    return z3::zext(base, info->size * 8 - base_size);
+  } else if (info->op == bvsext) {
+    z3::expr base = serialize(info->l2);
+    u32 base_size = base.get_sort().bv_size();
+    return z3::sext(base, info->size * 8 - base_size);
+  } else if (info->op == bvtrunc) {
+    z3::expr base = serialize(info->l2);
+    return base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8);
+  } else if (info->op == bvnot) {
+    assert(info->l1 != 0);
+    z3::expr e = serialize(info->l1);
+    return ~e;
+  } else if (info->op == bvneg) {
+    assert(info->l1 != 0);
+    z3::expr e = serialize(info->l1);
+    return -e;
+  }
+
+  // common ops
+  z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, info->size * 8);
+  if (info->l1 > CONST_OFFSET) op1 = serialize(info->l1);
+  z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, info->size * 8);
+  if (info->l2 > CONST_OFFSET) op2 = serialize(info->l2);
+
+  switch(info->op) {
+    case bvand:   return op1 & op2;
+    case bvor:    return op1 | op2;
+    case bvxor:   return op1 ^ op2;
+    case bvshl:   return z3::shl(op1, op2);
+    case bvlshr:  return z3::lshr(op1, op2);
+    case bvashr:  return z3::ashr(op1, op2);
+    case bvadd:   return op1 + op2;
+    case bvsub:   return op1 - op2;
+    case bvmul:   return op1 * op2;
+    case bvudiv:  return z3::udiv(op1, op2);
+    case bvsdiv:  return op1 / op2;
+    case bvurem:  return z3::urem(op1, op2);
+    case bvsrem:  return z3::srem(op1, op2);
+    case fmemcmp: return z3::ite(op1 == op2, __z3_context.bv_val(0, 1),
+                                             __z3_context.bv_val(1, 1));
+    default:
+      Printf("FATAL: unsupported op: %u\n", info->op);
+      break;
+  }
+  // should never reach here
+  Die();
 }
 
-u32 __fuzzer_branch_id = 0;
-u32 __fuzzer_target_id = 0;
-u32 __fuzzer_instance_id = 0;
+static z3::expr get_cmd(z3::expr &lhs, z3::expr &rhs, u32 predicate) {
+  switch (predicate) {
+    case bveq:  return lhs == rhs;
+    case bvneq: return lhs != rhs;
+    case bvugt: return z3::ugt(lhs, rhs);
+    case bvuge: return z3::uge(lhs, rhs);
+    case bvult: return z3::ult(lhs, rhs);
+    case bvule: return z3::ule(lhs, rhs);
+    case bvsgt: return lhs > rhs;
+    case bvsge: return lhs >= rhs;
+    case bvslt: return lhs < rhs;
+    case bvsle: return lhs <= rhs;
+    default:
+      Printf("FATAL: unsupported predicate: %u\n", predicate);
+      break;
+  }
+  // should never reach here
+  Die();
+}
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, int predicate,
+__taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
                   u64 c1, u64 c2) {
   if ((op1 == 0 && op2 == 0))
     return;
 
-  char buf[64];
-  u32 target = __fuzzer_target_id;
-  internal_snprintf(buf, sizeof(buf), "union-%d-%d.txt",
-          __fuzzer_instance_id, target);
-  FILE *fp = fopen(buf, "a");
-  if (fp) {
-    fprintf(fp, "##### %u\n", __fuzzer_branch_id);
-    fprintf(fp, "%u %u %u %u %llu %llu\n",
-            op1, op2, size, predicate, c1, c2);
-    serialize(op1, fp);
-    serialize(op2, fp);
-    fclose(fp);
+  AOUT("solving: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
+  try {
+    z3::expr bv_c1 = __z3_context.bv_val((uint64_t)c1, size * 8);
+    z3::expr bv_c2 = __z3_context.bv_val((uint64_t)c2, size * 8);
+    z3::expr result = get_cmd(bv_c1, bv_c2, predicate);
+
+    z3::expr lhs = bv_c1, rhs = bv_c2;
+    if (op1 != 0) lhs = serialize(op1);
+    if (op2 != 0) rhs = serialize(op2);
+    z3::expr pe = get_cmd(lhs, rhs, predicate);
+
+    __z3_solver.push();
+    __z3_solver.add(pe != result);
+    z3::check_result res = __z3_solver.check();
+
+    if (res == z3::sat) {
+      AOUT("branch solved\n");
+#if 0
+      char path[MAX_PATH];
+      internal_snprintf(path, MAX_PATH, "%s/id-%d-%d-%d", __output_dir,
+                        __instance_id, __session_id, __current_index);
+      int fd = open(buf, "wb");
+      close(fd);
+#endif
+    }
+
+    __z3_solver.pop();
+    // nested branch
+    __z3_solver.add(pe == result);
+  } catch (z3::exception e) {
+    Report("WARNING: solving error: %s\n", e.msg());
   }
+
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
@@ -530,6 +633,12 @@ static void RegisterDfsanFlags(FlagParser *parser, Flags *f) {
   RegisterFlag(parser, #Name, Description, &f->Name);
 #include "dfsan_flags.inc"
 #undef DFSAN_FLAG
+}
+
+static void InitializeSolver() {
+  __output_dir = flags().output_dir;
+  __instance_id = flags().instance_id;
+  __session_id = flags().session_id;
 }
 
 static void InitializeTaintFile() {
@@ -619,6 +728,8 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   __taint::allocator_init(HashTableAddr(), HashTableAddr() + hashtable_size);
 
   InitializeTaintFile();
+
+  InitializeSolver();
 
   // Register the fini callback to run when the program terminates successfully
   // or it is killed by the runtime.
