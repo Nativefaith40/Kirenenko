@@ -65,7 +65,7 @@ static __taint::union_hashtable __union_table(union_table_size);
 static const char* __output_dir;
 static u32 __instance_id;
 static u32 __session_id;
-static u64 __current_index = 0;
+static u32 __current_index = 0;
 static z3::context __z3_context;
 static z3::solver __z3_solver(__z3_context, "QF_BV");
 
@@ -765,6 +765,15 @@ static void dfsan_fini() {
   }
   if (tainted.buf) {
     UnmapOrDie(tainted.buf, tainted.buf_size);
+  }
+  // write output
+  char *afl_shmid = getenv("__AFL_SHM_ID");
+  if (afl_shmid) {
+    u32 shm_id = atoi(afl_shmid);
+    void *trace_id = shmat(shm_id, NULL, 0);
+    AOUT("find afl_shmid, mapped at %p", trace_id);
+    *(reinterpret_cast<u32*>(trace_id)) = __current_index;
+    shmdt(trace_id);
   }
 }
 
