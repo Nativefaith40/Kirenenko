@@ -297,6 +297,7 @@ class Taint : public ModulePass {
   LLVMContext *Ctx;
   IntegerType *ShadowTy;
   IntegerType *Int8Ty;
+  IntegerType *Int16Ty;
   IntegerType *Int32Ty;
   IntegerType *Int64Ty;
   PointerType *ShadowPtrTy;
@@ -318,7 +319,8 @@ class Taint : public ModulePass {
   FunctionType *TaintSetLabelFnTy;
   FunctionType *TaintNonzeroLabelFnTy;
   FunctionType *TaintVarargWrapperFnTy;
-  FunctionType *TaintSerializeFnTy;
+  FunctionType *TaintTraceCmpFnTy;
+  FunctionType *TaintTraceCondFnTy;
   FunctionType *TaintDebugFnTy;
   Constant *TaintUnionFn;
   Constant *TaintCheckedUnionFn;
@@ -328,7 +330,8 @@ class Taint : public ModulePass {
   Constant *TaintSetLabelFn;
   Constant *TaintNonzeroLabelFn;
   Constant *TaintVarargWrapperFn;
-  Constant *TaintSerializeFn;
+  Constant *TaintTraceCmpFn;
+  Constant *TaintTraceCondFn;
   Constant *TaintDebugFn;
   MDNode *ColdCallWeights;
   TaintABIList ABIList;
@@ -402,7 +405,7 @@ struct TaintFunction {
   void setShadow(Instruction *I, Value *Shadow);
   // Op Shadow
   Value *combineShadows(Value *V1, Value *V2,
-                        uint8_t op, Instruction *Pos);
+                        uint16_t op, Instruction *Pos);
   Value *combineBinaryOperatorShadows(BinaryOperator *BO, uint8_t op);
   Value *combineCastInstShadows(CastInst *CI, uint8_t op);
   Value *combineCmpInstShadows(CmpInst *CI, uint8_t op);
@@ -412,6 +415,7 @@ struct TaintFunction {
                    Instruction *Pos);
   void visitCmpInst(CmpInst *I);
   void visitSwitchInst(SwitchInst *I);
+  void visitCondition(Value *Cond, Instruction *I);
 };
 
 class TaintVisitor : public InstVisitor<TaintVisitor> {
@@ -425,6 +429,7 @@ public:
   }
 
   void visitBinaryOperator(BinaryOperator &BO);
+  void visitBranchInst(BranchInst &BR);
   void visitCastInst(CastInst &CI);
   void visitCmpInst(CmpInst &CI);
   void visitSwitchInst(SwitchInst &SWI);
@@ -553,6 +558,7 @@ bool Taint::doInitialization(Module &M) {
   Ctx = &M.getContext();
   ShadowTy = IntegerType::get(*Ctx, ShadowWidth);
   Int8Ty = IntegerType::get(*Ctx, 8);
+  Int16Ty = IntegerType::get(*Ctx, 16);
   Int32Ty = IntegerType::get(*Ctx, 32);
   Int64Ty = IntegerType::get(*Ctx, 64);
   ShadowPtrTy = PointerType::getUnqual(ShadowTy);
@@ -569,7 +575,7 @@ bool Taint::doInitialization(Module &M) {
   else
     report_fatal_error("unsupported triple");
 
-  Type *TaintUnionArgs[6] = { ShadowTy, ShadowTy, Int8Ty, Int8Ty, Int64Ty, Int64Ty};
+  Type *TaintUnionArgs[6] = { ShadowTy, ShadowTy, Int16Ty, Int8Ty, Int64Ty, Int64Ty};
   TaintUnionFnTy = FunctionType::get(
       ShadowTy, TaintUnionArgs, /*isVarArg=*/ false);
   Type *TaintUnionLoadArgs[2] = { ShadowPtrTy, IntptrTy };
@@ -587,10 +593,13 @@ bool Taint::doInitialization(Module &M) {
       Type::getVoidTy(*Ctx), None, /*isVarArg=*/false);
   TaintVarargWrapperFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), Type::getInt8PtrTy(*Ctx), /*isVarArg=*/false);
-  Type *TaintSerialzeArgs[6] = { ShadowTy, ShadowTy, ShadowTy, ShadowTy,
+  Type *TaintTraceCmpArgs[6] = { ShadowTy, ShadowTy, ShadowTy, ShadowTy,
       Int64Ty, Int64Ty };
-  TaintSerializeFnTy = FunctionType::get(
-      Type::getVoidTy(*Ctx), TaintSerialzeArgs, false);
+  TaintTraceCmpFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), TaintTraceCmpArgs, false);
+  Type *TaintTraceCondArgs[2] = { ShadowTy, Int8Ty };
+  TaintTraceCondFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), TaintTraceCondArgs, false);
 
   TaintDebugFnTy = FunctionType::get(Type::getVoidTy(*Ctx),
       {ShadowTy, ShadowTy, ShadowTy, ShadowTy, ShadowTy}, false);
@@ -790,8 +799,10 @@ bool Taint::runOnModule(Module &M) {
   TaintVarargWrapperFn = Mod->getOrInsertFunction("__dfsan_vararg_wrapper",
                                                   TaintVarargWrapperFnTy);
 
-  TaintSerializeFn =
-    Mod->getOrInsertFunction("__taint_serialize", TaintSerializeFnTy);
+  TaintTraceCmpFn =
+    Mod->getOrInsertFunction("__taint_trace_cmp", TaintTraceCmpFnTy);
+  TaintTraceCondFn =
+    Mod->getOrInsertFunction("__taint_trace_cond", TaintTraceCondFnTy);
 
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
@@ -808,7 +819,8 @@ bool Taint::runOnModule(Module &M) {
         &i != TaintSetLabelFn &&
         &i != TaintNonzeroLabelFn &&
         &i != TaintVarargWrapperFn &&
-        &i != TaintSerializeFn &&
+        &i != TaintTraceCmpFn &&
+        &i != TaintTraceCondFn &&
         &i != TaintDebugFn &&
         //&i != TaintStoreShadowFn &&
         &i != TaintUnionStoreFn) {
@@ -1107,8 +1119,8 @@ Value *TaintFunction::combineBinaryOperatorShadows(BinaryOperator *BO,
 }
 
 Value *TaintFunction::combineShadows(Value *V1, Value *V2,
-                                       uint8_t op,
-                                       Instruction *Pos) {
+                                     uint16_t op,
+                                     Instruction *Pos) {
   if (V1 == TT.ZeroShadow && V2 == TT.ZeroShadow) return V1;
   Type *Ty = Pos->getType();
   if (!(Ty->isIntegerTy() || Ty->isPointerTy())) {
@@ -1120,10 +1132,11 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
   if (op == Instruction::ICmp) {
     CmpInst *CI = cast<CmpInst>(Pos);
     size = DL.getTypeSizeInBits(CI->getOperand(0)->getType());
+    // op should be predicate
+    op |= (CI->getPredicate() << 8);
   }
   size /= 8;
-  if (size == 0) size = 1;
-  Value *Op = ConstantInt::get(TT.Int8Ty, op);
+  Value *Op = ConstantInt::get(TT.Int16Ty, op);
   Value *Size = ConstantInt::get(TT.Int8Ty, size);
   Value *Op1 = IRB.CreateZExtOrTrunc(Pos->getOperand(0), TT.Int64Ty);
   Value *Op2 = ConstantInt::get(TT.Int64Ty, 0);
@@ -1302,8 +1315,6 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   IRBuilder<> IRB(I);
   // get operand
   Value *Op1 = I->getOperand(0);
-  if (!Op1->getType()->isIntegerTy())
-    return;
   unsigned size = DL.getTypeSizeInBits(Op1->getType());
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   Value *Op2 = I->getOperand(1);
@@ -1315,13 +1326,20 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   int predicate = I->getPredicate();
   ConstantInt *Predicate = ConstantInt::get(TT.ShadowTy, predicate);
 
-  IRB.CreateCall(TT.TaintSerializeFn, {Op1Shadow, Op2Shadow, Size, Predicate,
+  IRB.CreateCall(TT.TaintTraceCmpFn, {Op1Shadow, Op2Shadow, Size, Predicate,
                  Op1, Op2});
 }
 
 void TaintVisitor::visitCmpInst(CmpInst &CI) {
   if (CI.getMetadata("nosanitize")) return;
+  // FIXME integer only now
+  if (!isa<ICmpInst>(CI)) return;
+#if 0 //TODO make an option
   TF.visitCmpInst(&CI);
+#endif
+  Value *CombinedShadow =
+    TF.combineCmpInstShadows(&CI, CI.getOpcode());
+  TF.setShadow(&CI, CombinedShadow);
 }
 
 void TaintFunction::visitSwitchInst(SwitchInst *I) {
@@ -1332,6 +1350,8 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   if (!Cond->getType()->isIntegerTy())
     return;
   Value *CondShadow = getShadow(Cond);
+  if (CondShadow == TT.ZeroShadow)
+    return;
   unsigned size = DL.getTypeSizeInBits(Cond->getType());
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   ConstantInt *Predicate = ConstantInt::get(TT.ShadowTy, 32); // EQ, ==
@@ -1342,7 +1362,7 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
     IRBuilder<> IRB(I);
     Cond = IRB.CreateZExtOrTrunc(Cond, TT.Int64Ty);
     CV = IRB.CreateZExtOrTrunc(CV, TT.Int64Ty);
-    IRB.CreateCall(TT.TaintSerializeFn, {CondShadow, TT.ZeroShadow, Size, Predicate,
+    IRB.CreateCall(TT.TaintTraceCmpFn, {CondShadow, TT.ZeroShadow, Size, Predicate,
                    Cond, CV});
   }
 }
@@ -1401,29 +1421,22 @@ void TaintVisitor::visitAllocaInst(AllocaInst &I) {
 }
 
 void TaintVisitor::visitSelectInst(SelectInst &I) {
-  Value *CondShadow = TF.getShadow(I.getCondition());
+  Value *Condition = I.getCondition();
   Value *TrueShadow = TF.getShadow(I.getTrueValue());
   Value *FalseShadow = TF.getShadow(I.getFalseValue());
 
-  if (isa<VectorType>(I.getCondition()->getType())) {
+  if (isa<VectorType>(Condition->getType())) {
     //FIXME
-#if 0
-    TF.setShadow(
-        &I,
-        TF.combineShadows(
-            CondShadow, TF.combineShadows(TrueShadow, FalseShadow, &I), &I));
-#else
     TF.setShadow(&I, TF.TT.ZeroShadow);
-#endif
   } else {
     Value *ShadowSel;
     if (TrueShadow == FalseShadow) {
       ShadowSel = TrueShadow;
     } else {
       ShadowSel =
-          SelectInst::Create(I.getCondition(), TrueShadow, FalseShadow, "", &I);
+          SelectInst::Create(Condition, TrueShadow, FalseShadow, "", &I);
     }
-    // condition should have been handled when visiting cmpinst
+    TF.visitCondition(Condition, &I);
     TF.setShadow(&I, ShadowSel);
   }
 }
@@ -1748,6 +1761,21 @@ void TaintVisitor::visitPHINode(PHINode &PN) {
 
   TF.PHIFixups.push_back(std::make_pair(&PN, ShadowPN));
   TF.setShadow(&PN, ShadowPN);
+}
+
+void TaintFunction::visitCondition(Value *Condition, Instruction *I) {
+  IRBuilder<> IRB(I);
+  // get operand
+  Value *Shadow = getShadow(Condition);
+  if (Shadow == TT.ZeroShadow)
+    return;
+  IRB.CreateCall(TT.TaintTraceCondFn, {Shadow, Condition});
+}
+
+void TaintVisitor::visitBranchInst(BranchInst &BR) {
+  if (BR.getMetadata("nosanitize")) return;
+  if (BR.isUnconditional()) return;
+  TF.visitCondition(BR.getCondition(), &BR);
 }
 
 static RegisterPass<Taint> X("taint_pass", "Taint Pass");

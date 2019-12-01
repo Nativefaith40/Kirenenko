@@ -122,7 +122,7 @@ static void dfsan_check_label(dfsan_label label) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
-dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size,
+dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
                           u64 op1, u64 op2) {
   if (l1 > l2 && is_commutative(op)) {
     // needs to swap both labels and concretes
@@ -136,7 +136,8 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size,
   if (l2 >= CONST_OFFSET) op2 = 0;
 
   struct dfsan_label_info label_info = {
-    .l1 = l1, .l2 = l2, .op = op, .size = size, .op1 = op1, .op2 = op2};
+    .l1 = l1, .l2 = l2, .op = op, .size = size, .flipped = 0,
+    .op1 = op1, .op2 = op2};
 
   __taint::option res = __union_table.lookup(label_info);
   if (res != __taint::none()) {
@@ -204,10 +205,10 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       AOUT("same: offset = %d, size = %d, n = %d\n", offset,
           __dfsan_label_info[label0].size, n);
 
-      return __taint_union(offset, label0, bvtrunc, n, 0, 0);
+      return __taint_union(offset, label0, Trunc, n, 0, 0);
     } else {
       // smaller than loaded, extend
-      return __taint_union(0, label0, bvzext, n, 0, 0);
+      return __taint_union(0, label0, ZExt, n, 0, 0);
     }
   }
   // shape
@@ -235,10 +236,10 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
 
     dfsan_label ret = label0;
     if (load_size > 1) {
-      ret = __taint_union(label0, (dfsan_label)load_size, bvload, load_size, 0, 0);
+      ret = __taint_union(label0, (dfsan_label)load_size, Load, load_size, 0, 0);
     }
     if (shape_ext) {
-      ret = __taint_union(0, ret, bvzext, n, 0, 0);
+      ret = __taint_union(0, ret, ZExt, n, 0, 0);
     }
     return ret;
   } else {
@@ -250,10 +251,10 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       if (next_label != 0) {
         i += __dfsan_label_info[next_label].size;
         if (i > n) Report("WARNING: partial loading %d %d\n", i,  n);
-        label = __taint_union(label, next_label, bvconcat, i, 0, 0);
+        label = __taint_union(label, next_label, Concat, i, 0, 0);
       } else {
         ++i;
-        label = __taint_union(0, label, bvzext, i, 0, 0);
+        label = __taint_union(0, label, ZExt, i, 0, 0);
       }
     }
     AOUT("\n");
@@ -271,7 +272,7 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
   }
   // check how the source label is created
   switch (__dfsan_label_info[l].op) {
-    case bvload: {
+    case Load: {
       // if source label is union load, just break it up
       dfsan_label label0 = __dfsan_label_info[l].l1;
       uptr s = n < __dfsan_label_info[l].size ? n : __dfsan_label_info[l].size;
@@ -279,7 +280,7 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
         ls[i] = label0 + i;
       break;
     }
-    case bvzext: {
+    case ZExt: {
       dfsan_label orig = __dfsan_label_info[l].l2;
       for (uptr i = __dfsan_label_info[orig].size; i < n; ++i)
         ls[i] = 0;
@@ -328,7 +329,7 @@ __dfsan_vararg_wrapper(const char *fname) {
 // Like __dfsan_union, but for use from the client or custom functions.  Hence
 // the equality comparison is done here before calling __dfsan_union.
 SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
-dfsan_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size) {
+dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size) {
   return __taint_union(l1, l2, op, size, 0, 0);
 }
 
@@ -433,83 +434,6 @@ dfsan_dump_labels(int fd) {
   }
 }
 
-static z3::expr serialize(dfsan_label label) {
-  if (label < CONST_OFFSET || label == kInitializingLabel) {
-    Report("WARNING: invalid label: %d\n", label);
-    throw z3::exception("invalid label");
-  }
-  
-  dfsan_label_info *info = &__dfsan_label_info[label];
-  AOUT("%u %u %u %u %u %llu %llu\n", label, info->l1, info->l2,
-       info->op, info->size, info->op1, info->op2);
-
-  // special ops
-  if (info->op == 0) {
-    // input
-    z3::symbol symbol = __z3_context.int_symbol(info->op1);
-    z3::sort sort = __z3_context.bv_sort(8);
-    return __z3_context.constant(symbol, sort);
-  } else if (info->op == bvload) {
-    u64 offset = __dfsan_label_info[info->l1].op1;
-    z3::symbol symbol = __z3_context.int_symbol(offset);
-    z3::sort sort = __z3_context.bv_sort(8);
-    z3::expr out = __z3_context.constant(symbol, sort);
-    for (u32 i = 1; i < info->l2; i++) {
-      symbol = __z3_context.int_symbol(offset + i);
-      out = z3::concat(__z3_context.constant(symbol, sort), out);
-    }
-    return out;
-  } else if (info->op == bvzext) {
-    z3::expr base = serialize(info->l2);
-    u32 base_size = base.get_sort().bv_size();
-    return z3::zext(base, info->size * 8 - base_size);
-  } else if (info->op == bvsext) {
-    z3::expr base = serialize(info->l2);
-    u32 base_size = base.get_sort().bv_size();
-    return z3::sext(base, info->size * 8 - base_size);
-  } else if (info->op == bvtrunc) {
-    z3::expr base = serialize(info->l2);
-    return base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8);
-  } else if (info->op == bvnot) {
-    assert(info->l1 != 0);
-    z3::expr e = serialize(info->l1);
-    return ~e;
-  } else if (info->op == bvneg) {
-    assert(info->l1 != 0);
-    z3::expr e = serialize(info->l1);
-    return -e;
-  }
-
-  // common ops
-  z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, info->size * 8);
-  if (info->l1 > CONST_OFFSET) op1 = serialize(info->l1);
-  z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, info->size * 8);
-  if (info->l2 > CONST_OFFSET) op2 = serialize(info->l2);
-
-  switch(info->op) {
-    case bvand:   return op1 & op2;
-    case bvor:    return op1 | op2;
-    case bvxor:   return op1 ^ op2;
-    case bvshl:   return z3::shl(op1, op2);
-    case bvlshr:  return z3::lshr(op1, op2);
-    case bvashr:  return z3::ashr(op1, op2);
-    case bvadd:   return op1 + op2;
-    case bvsub:   return op1 - op2;
-    case bvmul:   return op1 * op2;
-    case bvudiv:  return z3::udiv(op1, op2);
-    case bvsdiv:  return op1 / op2;
-    case bvurem:  return z3::urem(op1, op2);
-    case bvsrem:  return z3::srem(op1, op2);
-    case fmemcmp: return z3::ite(op1 == op2, __z3_context.bv_val(0, 1),
-                                             __z3_context.bv_val(1, 1));
-    default:
-      Printf("FATAL: unsupported op: %u\n", info->op);
-      break;
-  }
-  // should never reach here
-  Die();
-}
-
 static z3::expr get_cmd(z3::expr &lhs, z3::expr &rhs, u32 predicate) {
   switch (predicate) {
     case bveq:  return lhs == rhs;
@@ -530,13 +454,132 @@ static z3::expr get_cmd(z3::expr &lhs, z3::expr &rhs, u32 predicate) {
   Die();
 }
 
+static z3::expr serialize(dfsan_label label) {
+  if (label < CONST_OFFSET || label == kInitializingLabel) {
+    Report("WARNING: invalid label: %d\n", label);
+    throw z3::exception("invalid label");
+  }
+  
+  dfsan_label_info *info = &__dfsan_label_info[label];
+  AOUT("%u %u %u %u %u %llu %llu\n", label, info->l1, info->l2,
+       info->op, info->size, info->op1, info->op2);
+
+  // special ops
+  if (info->op == 0) {
+    // input
+    z3::symbol symbol = __z3_context.int_symbol(info->op1);
+    z3::sort sort = __z3_context.bv_sort(8);
+    return __z3_context.constant(symbol, sort);
+  } else if (info->op == Load) {
+    u64 offset = __dfsan_label_info[info->l1].op1;
+    z3::symbol symbol = __z3_context.int_symbol(offset);
+    z3::sort sort = __z3_context.bv_sort(8);
+    z3::expr out = __z3_context.constant(symbol, sort);
+    for (u32 i = 1; i < info->l2; i++) {
+      symbol = __z3_context.int_symbol(offset + i);
+      out = z3::concat(__z3_context.constant(symbol, sort), out);
+    }
+    return out;
+  } else if (info->op == ZExt) {
+    z3::expr base = serialize(info->l2);
+    u32 base_size = base.get_sort().bv_size();
+    return z3::zext(base, info->size * 8 - base_size);
+  } else if (info->op == SExt) {
+    z3::expr base = serialize(info->l2);
+    u32 base_size = base.get_sort().bv_size();
+    return z3::sext(base, info->size * 8 - base_size);
+  } else if (info->op == Trunc) {
+    z3::expr base = serialize(info->l2);
+    return base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8);
+  } else if (info->op == Not) {
+    assert(info->l1 != 0);
+    z3::expr e = serialize(info->l1);
+    return ~e;
+  } else if (info->op == Neg) {
+    assert(info->l1 != 0);
+    z3::expr e = serialize(info->l1);
+    return -e;
+  }
+
+  // common ops
+  u8 size = info->size * 8;
+  if (!size) size = 1;
+  z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, size);
+  if (info->l1 > CONST_OFFSET) op1 = serialize(info->l1);
+  z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, size);
+  if (info->l2 > CONST_OFFSET) op2 = serialize(info->l2);
+
+  switch((info->op & 0xff)) {
+    // llvm doesn't distinguish between logical and bitwise and/or/xor
+    case And:     return info->size ? (op1 & op2) : (op1 && op2);
+    case Or:      return info->size ? (op1 | op2) : (op1 || op2);
+    case Xor:     return op1 ^ op2;
+    case Shl:     return z3::shl(op1, op2);
+    case LShr:    return z3::lshr(op1, op2);
+    case AShr:    return z3::ashr(op1, op2);
+    case Add:     return op1 + op2;
+    case Sub:     return op1 - op2;
+    case Mul:     return op1 * op2;
+    case UDiv:    return z3::udiv(op1, op2);
+    case SDiv:    return op1 / op2;
+    case URem:    return z3::urem(op1, op2);
+    case SRem:    return z3::srem(op1, op2);
+    // relational
+    case ICmp:    return get_cmd(op1, op2, info->op >> 8);
+    // higher-order
+    case fmemcmp: return z3::ite(op1 == op2, __z3_context.bv_val(0, 1),
+                                             __z3_context.bv_val(1, 1));
+    default:
+      Printf("FATAL: unsupported op: %u\n", info->op);
+      break;
+  }
+  // should never reach here
+  Die();
+}
+
+static void generate_input() {
+  char path[PATH_MAX];
+  internal_snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", __output_dir,
+                    __instance_id, __session_id, __current_index++);
+  fd_t fd = OpenFile(path, WrOnly);
+  if (fd == kInvalidFd) {
+    throw z3::exception("failed to open new input file for write");
+  }
+
+  if (tainted.fd != 0) {
+    if (!WriteToFile(fd, tainted.buf, tainted.size)) {
+      throw z3::exception("failed to copy original input\n");
+    }
+  } else {
+    // FIXME input is stdin
+    throw z3::exception("original input is stdin");
+  }
+
+  // from qsym
+  z3::model m = __z3_solver.get_model();
+  unsigned num_constants = m.num_consts();
+  for (unsigned i = 0; i < num_constants; i++) {
+    z3::func_decl decl = m.get_const_decl(i);
+    z3::expr e = m.get_const_interp(decl);
+    z3::symbol name = decl.name();
+
+    if (name.kind() == Z3_INT_SYMBOL) {
+      u8 value = (u8)e.get_numeral_int();
+      internal_lseek(fd, name.to_int(), SEEK_SET);
+      WriteToFile(fd, &value, sizeof(value));
+    }
+  }
+
+  CloseFile(fd);
+}
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
+__taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
                   u64 c1, u64 c2) {
   if ((op1 == 0 && op2 == 0))
     return;
 
-  AOUT("solving: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
+  AOUT("solving cmp: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
   bool pushed = false;
   try {
     z3::expr bv_c1 = __z3_context.bv_val((uint64_t)c1, size * 8);
@@ -555,41 +598,8 @@ __taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
 
     //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
     if (res == z3::sat) {
-      AOUT("branch solved\n");
-
-      char path[PATH_MAX];
-      internal_snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", __output_dir,
-                        __instance_id, __session_id, __current_index++);
-      fd_t fd = OpenFile(path, WrOnly);
-      if (fd == kInvalidFd) {
-        throw z3::exception("failed to open new input file for write");
-      }
-
-      if (tainted.fd != 0) {
-        if (!WriteToFile(fd, tainted.buf, tainted.size)) {
-          throw z3::exception("failed to copy original input\n");
-        }
-      } else {
-        // FIXME input is stdin
-        throw z3::exception("original input is stdin");
-      }
-
-      // from qsym
-      z3::model m = __z3_solver.get_model();
-      unsigned num_constants = m.num_consts();
-      for (unsigned i = 0; i < num_constants; i++) {
-        z3::func_decl decl = m.get_const_decl(i);
-        z3::expr e = m.get_const_interp(decl);
-        z3::symbol name = decl.name();
-
-        if (name.kind() == Z3_INT_SYMBOL) {
-          u8 value = (u8)e.get_numeral_int();
-          internal_lseek(fd, name.to_int(), SEEK_SET);
-          WriteToFile(fd, &value, sizeof(value));
-        }
-      }
-
-      CloseFile(fd);
+      AOUT("solved\n");
+      generate_input();
     } else if (res == z3::unsat) {
       AOUT("branch not solvable\n");
     }
@@ -598,6 +608,42 @@ __taint_serialize(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
     pushed = false;
     // nested branch
     __z3_solver.add(pe == result);
+  } catch (z3::exception e) {
+    Report("WARNING: solving error: %s\n", e.msg());
+  }
+  
+  if (pushed) __z3_solver.pop();
+
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__taint_trace_cond(dfsan_label label, u8 r) {
+  if (label == 0)
+    return;
+
+  AOUT("solving cond: %u %u\n", label, r);
+  bool pushed = false;
+  try {
+    z3::expr result = __z3_context.bool_val(r);
+    z3::expr cond = serialize(label);
+
+    __z3_solver.push();
+    pushed = true;
+    __z3_solver.add(cond != result);
+    z3::check_result res = __z3_solver.check();
+
+    //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+    if (res == z3::sat) {
+      AOUT("branch solved\n");
+      generate_input();
+    } else if (res == z3::unsat) {
+      AOUT("branch not solvable\n");
+    }
+
+    __z3_solver.pop();
+    pushed = false;
+    // nested branch
+    __z3_solver.add(cond == result);
   } catch (z3::exception e) {
     Report("WARNING: solving error: %s\n", e.msg());
   }
