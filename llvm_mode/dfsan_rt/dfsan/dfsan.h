@@ -39,8 +39,9 @@ typedef u32 dfsan_label;
 struct dfsan_label_info {
   dfsan_label l1;
   dfsan_label l2;
-  u8 op;
+  u16 op;
   u8 size;
+  u8 flipped;
   u64 op1;
   u64 op2;
 };
@@ -66,7 +67,7 @@ void dfsan_add_label(dfsan_label label, u8 op, void *addr, uptr size);
 void dfsan_set_label(dfsan_label label, void *addr, uptr size);
 dfsan_label dfsan_read_label(const void *addr, uptr size);
 void dfsan_store_label(dfsan_label l1, void *addr, uptr size);
-dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u8 op, u8 size);
+dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size);
 dfsan_label dfsan_create_label(off_t offset);
 
 // taint source
@@ -112,35 +113,24 @@ inline Flags &flags() {
 }
 
 enum operators {
-  // bitwise
-  bvnot = 1,
-  bvand = 26,
-  bvor = 27,
-  bvxor = 28,
-  bvshl = 23,
-  bvlshr = 24,
-  bvashr = 25,
-  // arithmetic
-  bvneg = 2,
-  bvadd = 11,
-  bvsub = 13,
-  bvmul = 15,
-  bvudiv = 17,
-  bvsdiv = 18,
-  bvurem = 20,
-  bvsrem = 21,
-  // extend
-  bvtrunc = 36,
-  bvzext = 37,
-  bvsext = 38,
-  // load
-  bvload = 3,
-  bvconcat = 5,
-  // extract
-  bvextract = 4,
-  // functions
-  fmemcmp = 51,
-  fcrc32 = 52
+#define HANDLE_BINARY_INST(num, opcode, Class) opcode = num,
+#define HANDLE_CAST_INST(num, opcode, Class) opcode = num,
+#define HANDLE_OTHER_INST(num, opcode, Class) opcode = num,
+#define LAST_OTHER_INST(num) last_llvm_op = num,
+#include "llvm/IR/Instruction.def"
+#undef HANDLE_BINARY_INST
+#undef HANDLE_CAST_INST
+#undef HANDLE_OTHER_INST
+#undef LAST_OTHER_INST
+  // self-defined
+  Not = 1,
+  Neg = 2,
+  Load = 3,
+  Extract = 4,
+  Concat = 5,
+  // higher-order
+  fmemcmp = last_llvm_op + 1,
+  fcrc32  = last_llvm_op + 2
 };
 
 enum predicate {
@@ -158,11 +148,11 @@ enum predicate {
 
 static inline bool is_commutative(unsigned char op) {
   switch(op) {
-    case bvand:
-    case bvor:
-    case bvxor:
-    case bvadd:
-    case bvmul:
+    case And:
+    case Or:
+    case Xor:
+    case Add:
+    case Mul:
     case fmemcmp:
       return true;
     default:
