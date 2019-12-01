@@ -482,6 +482,9 @@ static z3::expr serialize(dfsan_label label) {
     return out;
   } else if (info->op == ZExt) {
     z3::expr base = serialize(info->l2);
+    if (base.is_bool()) // dirty hack since llvm lacks bool
+      base = z3::ite(base, __z3_context.bv_val(1, 1),
+                           __z3_context.bv_val(0, 1));
     u32 base_size = base.get_sort().bv_size();
     return z3::zext(base, info->size * 8 - base_size);
   } else if (info->op == SExt) {
@@ -527,8 +530,8 @@ static z3::expr serialize(dfsan_label label) {
     // relational
     case ICmp:    return get_cmd(op1, op2, info->op >> 8);
     // higher-order
-    case fmemcmp: return z3::ite(op1 == op2, __z3_context.bv_val(0, 1),
-                                             __z3_context.bv_val(1, 1));
+    case fmemcmp: return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
+                                             __z3_context.bv_val(1, 32));
     default:
       Printf("FATAL: unsupported op: %u\n", info->op);
       break;
