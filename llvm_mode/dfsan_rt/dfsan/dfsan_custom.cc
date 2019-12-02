@@ -172,8 +172,16 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_strcmp(const char *s1, const char *s2,
                                                 dfsan_label *ret_label) {
   CALL_WEAK_INTERCEPTOR_HOOK(dfsan_weak_hook_strcmp, GET_CALLER_PC(), s1, s2,
                              s1_label, s2_label);
-  *ret_label = 0;
-  return strcmp(s1, s2);
+  int ret = strcmp(s1, s2);
+  // check which one is tainted
+  size_t size = strlen(s1) + 1; // including tailing '\0'
+  if (dfsan_get_label(s1) == 0)
+    size = strlen(s2) + 1; // including tailing '\0'
+  dfsan_label ls1 = dfsan_read_label(s1, size);
+  dfsan_label ls2 = dfsan_read_label(s2, size);
+  // ugly hack ...
+  *ret_label = dfsan_union(ls1, ls2, fmemcmp, size, (u64)s1, (u64)s2);
+  return !!ret;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE int

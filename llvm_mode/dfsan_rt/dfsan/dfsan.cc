@@ -392,6 +392,11 @@ dfsan_read_label(const void *addr, uptr size) {
   return __taint_union_load(shadow_for(addr), size);
 }
 
+SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
+dfsan_get_label(const void *addr) {
+  return *shadow_for(addr);
+}
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 const struct dfsan_label_info *dfsan_get_label_info(dfsan_label label) {
   return &__dfsan_label_info[label];
@@ -518,9 +523,9 @@ static z3::expr serialize(dfsan_label label) {
   }
   // higher-order
   else if (info->op == fmemcmp) {
-    z3::expr op1 = (info->l1 > CONST_OFFSET) ? serialize(info->l1) :
+    z3::expr op1 = (info->l1 >= CONST_OFFSET) ? serialize(info->l1) :
                    read_concrete(info->op1, info->size);
-    assert(info->l2 > CONST_OFFSET);
+    assert(info->l2 >= CONST_OFFSET);
     z3::expr op2 = serialize(info->l2);
     return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
                                __z3_context.bv_val(1, 32));
@@ -530,9 +535,9 @@ static z3::expr serialize(dfsan_label label) {
   u8 size = info->size * 8;
   if (!size) size = 1;
   z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, size);
-  if (info->l1 > CONST_OFFSET) op1 = serialize(info->l1);
+  if (info->l1 >= CONST_OFFSET) op1 = serialize(info->l1);
   z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, size);
-  if (info->l2 > CONST_OFFSET) op2 = serialize(info->l2);
+  if (info->l2 >= CONST_OFFSET) op2 = serialize(info->l2);
 
   switch((info->op & 0xff)) {
     // llvm doesn't distinguish between logical and bitwise and/or/xor
@@ -551,6 +556,8 @@ static z3::expr serialize(dfsan_label label) {
     case SRem:    return z3::srem(op1, op2);
     // relational
     case ICmp:    return get_cmd(op1, op2, info->op >> 8);
+    // concat
+    case Concat:  return z3::concat(op2, op1);
     default:
       Printf("FATAL: unsupported op: %u\n", info->op);
       break;
@@ -659,7 +666,7 @@ __taint_trace_cond(dfsan_label label, u8 r) {
       AOUT("branch solved\n");
       generate_input();
     } else if (res == z3::unsat) {
-      AOUT("branch not solvable\n");
+      AOUT("branch not solvable\n%s\n", __z3_solver.to_smt2().c_str());
     }
 
     __z3_solver.pop();
