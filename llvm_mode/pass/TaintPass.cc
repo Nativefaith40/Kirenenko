@@ -1138,10 +1138,19 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
   size /= 8;
   Value *Op = ConstantInt::get(TT.Int16Ty, op);
   Value *Size = ConstantInt::get(TT.Int8Ty, size);
-  Value *Op1 = IRB.CreateZExtOrTrunc(Pos->getOperand(0), TT.Int64Ty);
+  Value *Op1 = Pos->getOperand(0);
+  if (Op1->getType()->isPointerTy())
+    Op1 = IRB.CreatePtrToInt(Op1, TT.Int64Ty);
+  else
+    Op1 = IRB.CreateZExtOrTrunc(Op1, TT.Int64Ty);
   Value *Op2 = ConstantInt::get(TT.Int64Ty, 0);
-  if (Pos->getNumOperands() > 1)
-    Op2 = IRB.CreateZExtOrTrunc(Pos->getOperand(1), TT.Int64Ty);
+  if (Pos->getNumOperands() > 1) {
+    Op2 = Pos->getOperand(1);
+    if (Op2->getType()->isPointerTy())
+      Op2 = IRB.CreatePtrToInt(Op2, TT.Int64Ty);
+    else
+      Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
+  }
   CallInst *Call = IRB.CreateCall(TT.TaintUnionFn, {V1, V2, Op, Size, Op1, Op2});
   Call->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
   Call->addParamAttr(0, Attribute::ZExt);
