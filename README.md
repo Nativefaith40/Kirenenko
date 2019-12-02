@@ -5,6 +5,7 @@
 **STILL IN DEVELOPMENT**
 
 I'm really bad at naming so we probably will change it.
+I don't have much time to code so progress will slowdown.
 
 ## Building
 
@@ -56,4 +57,6 @@ It doesn't support input growth yet so we need to use a large enough
 seed input. It also lacks a driver yet, so we need to manually run
 the newly generated test case(s).
 
-Currently I've tested with `mini`, `bitflip`, `shift`, and `switch`.
+Currently I've tested with `bitflip`, `call_fn`, `call_fn2`, `call_fn3`,
+`cf1`, `context`, `if_eq`, `infer_type`, `memcmp`, `mini`, `pointer`,
+`shift_and`, `sign`, `strcmp`, `strcmp2`, `switch` and `switch2`.
