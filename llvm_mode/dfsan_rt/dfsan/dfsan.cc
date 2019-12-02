@@ -329,8 +329,8 @@ __dfsan_vararg_wrapper(const char *fname) {
 // Like __dfsan_union, but for use from the client or custom functions.  Hence
 // the equality comparison is done here before calling __dfsan_union.
 SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
-dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size) {
-  return __taint_union(l1, l2, op, size, 0, 0);
+dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size, u64 op1, u64 op2) {
+  return __taint_union(l1, l2, op, size, op1, op2);
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
@@ -434,6 +434,19 @@ dfsan_dump_labels(int fd) {
   }
 }
 
+static z3::expr read_concrete(u64 addr, u8 size) {
+  u8 *ptr = reinterpret_cast<u8*>(addr);
+  if (ptr == nullptr) {
+    throw z3::exception("invalid concrete address");
+  }
+
+  z3::expr val = __z3_context.bv_val(*ptr++, 8);
+  for (u8 i = 1; i < size; i++) {
+    val = z3::concat(__z3_context.bv_val(*ptr++, 8), val);
+  }
+  return val;
+}
+
 static z3::expr get_cmd(z3::expr &lhs, z3::expr &rhs, u32 predicate) {
   switch (predicate) {
     case bveq:  return lhs == rhs;
@@ -503,6 +516,15 @@ static z3::expr serialize(dfsan_label label) {
     z3::expr e = serialize(info->l1);
     return -e;
   }
+  // higher-order
+  else if (info->op == fmemcmp) {
+    z3::expr op1 = (info->l1 > CONST_OFFSET) ? serialize(info->l1) :
+                   read_concrete(info->op1, info->size);
+    assert(info->l2 > CONST_OFFSET);
+    z3::expr op2 = serialize(info->l2);
+    return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
+                               __z3_context.bv_val(1, 32));
+  }
 
   // common ops
   u8 size = info->size * 8;
@@ -529,9 +551,6 @@ static z3::expr serialize(dfsan_label label) {
     case SRem:    return z3::srem(op1, op2);
     // relational
     case ICmp:    return get_cmd(op1, op2, info->op >> 8);
-    // higher-order
-    case fmemcmp: return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
-                                             __z3_context.bv_val(1, 32));
     default:
       Printf("FATAL: unsupported op: %u\n", info->op);
       break;

@@ -67,7 +67,8 @@ void dfsan_add_label(dfsan_label label, u8 op, void *addr, uptr size);
 void dfsan_set_label(dfsan_label label, void *addr, uptr size);
 dfsan_label dfsan_read_label(const void *addr, uptr size);
 void dfsan_store_label(dfsan_label l1, void *addr, uptr size);
-dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size);
+dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
+                        u64 op1, u64 op2);
 dfsan_label dfsan_create_label(off_t offset);
 
 // taint source
