@@ -575,7 +575,7 @@ static void generate_input() {
     throw z3::exception("failed to open new input file for write");
   }
 
-  if (tainted.fd != 0) {
+  if (!tainted.is_stdin) {
     if (!WriteToFile(fd, tainted.buf, tainted.size)) {
       throw z3::exception("failed to copy original input\n");
     }
@@ -650,6 +650,9 @@ __taint_trace_cond(dfsan_label label, u8 r) {
   if (label == 0)
     return;
 
+  if (__dfsan_label_info[label].flipped)
+    return;
+
   AOUT("solving cond: %u %u\n", label, r);
   bool pushed = false;
   try {
@@ -666,13 +669,16 @@ __taint_trace_cond(dfsan_label label, u8 r) {
       AOUT("branch solved\n");
       generate_input();
     } else if (res == z3::unsat) {
-      AOUT("branch not solvable\n%s\n", __z3_solver.to_smt2().c_str());
+      AOUT("branch not solvable\n");
+      //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
     }
 
     __z3_solver.pop();
     pushed = false;
     // nested branch
     __z3_solver.add(cond == result);
+    // mark as flipped
+    __dfsan_label_info[label].flipped = 1;
   } catch (z3::exception e) {
     Report("WARNING: solving error: %s\n", e.msg());
   }
@@ -724,6 +730,11 @@ taint_close_file(int fd) {
   }
 }
 
+SANITIZER_INTERFACE_ATTRIBUTE int
+is_stdin_taint(void) {
+  return tainted.is_stdin;
+}
+
 // for utmp interface
 SANITIZER_INTERFACE_ATTRIBUTE int
 is_utmp_taint(void) {
@@ -765,21 +776,31 @@ static void InitializeTaintFile() {
     dfsan_label label = dfsan_create_label(i);
     assert(label == i);
   }
+  struct stat st;
   const char *filename = flags().taint_file;
   if (internal_strcmp(filename, "stdin") == 0) {
     tainted.fd = 0;
-    tainted.size = 1;
+    // try to get the size, as stdin may be a file
+    if (!fstat(0, &st)) {
+      tainted.size = st.st_size;
+      tainted.is_stdin = 0;
+    } else {
+      tainted.size = 1;
+      tainted.is_stdin = 1; // truly stdin
+    }
   } else if (internal_strcmp(filename, "") == 0) {
     tainted.fd = -1;
-  }
-  else {
+  } else {
     if (!realpath(filename, tainted.filename)) {
       Report("WARNING: failed to get to real path for taint file\n");
       return;
     }
-    struct stat st;
     stat(filename, &st);
     tainted.size = st.st_size;
+    tainted.is_stdin = 0;
+  }
+
+  if (!tainted.is_stdin) {
     for (off_t i = 0; i < tainted.size; i++) {
       dfsan_label label = dfsan_create_label(i);
       dfsan_check_label(label);

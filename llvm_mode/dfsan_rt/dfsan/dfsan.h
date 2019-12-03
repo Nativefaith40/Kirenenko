@@ -57,7 +57,8 @@ struct taint_file {
   off_t offset;
   dfsan_label label;
   off_t size;
-  int is_utmp;
+  u8 is_stdin;
+  u8 is_utmp;
   char *buf;
   uptr buf_size;
 };
@@ -77,6 +78,7 @@ void taint_set_file(const char *filename, int fd);
 off_t taint_get_file(int fd);
 void taint_close_file(int fd);
 int is_taint_file(const char *filename);
+int is_stdin_taint(void);
 
 // taint source utmp
 off_t get_utmp_offset(void);
