@@ -867,7 +867,6 @@ static void dfsan_fini() {
   if (afl_shmid) {
     u32 shm_id = atoi(afl_shmid);
     void *trace_id = shmat(shm_id, NULL, 0);
-    AOUT("find afl_shmid, mapped at %p", trace_id);
     *(reinterpret_cast<u32*>(trace_id)) = __current_index;
     shmdt(trace_id);
   }
