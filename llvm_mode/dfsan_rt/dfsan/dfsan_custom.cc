@@ -1242,7 +1242,7 @@ SANITIZER_INTERFACE_WEAK_DEF(void, __dfsw___sanitizer_cov_trace_switch, void) {}
 
 static inline dfsan_label get_label_for(int fd, off_t offset) {
   // check if fd is stdin, if so, the label hasn't been pre-allocated
-  if (fd == 0) return dfsan_create_label(offset);
+  if (is_stdin_taint()) return dfsan_create_label(offset);
   // if fd is a tainted file, the label should have been pre-allocated
   else return (offset + CONST_OFFSET);
 }
@@ -1577,7 +1577,7 @@ __dfsw_fgetc(FILE *stream, dfsan_label stream_label, dfsan_label *ret_label) {
   off_t offset = ftell(stream);
   int ret = fgetc(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = get_label_for(fd, offset);
+    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
     AOUT("%d label is readed by fgetc\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1589,7 +1589,7 @@ __dfsw_getc(FILE *stream, dfsan_label stream_label, dfsan_label *ret_label) {
   off_t offset = ftell(stream);
   int ret = getc(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = get_label_for(fd, offset);
+    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
     AOUT("%d label is readed by getc\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1602,7 +1602,7 @@ __dfsw_getc_unlocked(FILE *stream, dfsan_label stream_label,
   off_t offset = ftell(stream);
   int ret = getc_unlocked(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = get_label_for(fd, offset);
+    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
     AOUT("%d label is readed by getc_unlocked\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1614,7 +1614,7 @@ __dfsw__IO_getc(FILE *stream, dfsan_label stream_label, dfsan_label *ret_label) 
   off_t offset = ftell(stream);
   int ret = getc(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = get_label_for(fd, offset);
+    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
     AOUT("%d label is readed by __IO_getc\n", *ret_label);
   } else *ret_label = 0;
   return ret;
