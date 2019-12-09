@@ -39,12 +39,16 @@ typedef u32 dfsan_label;
 struct dfsan_label_info {
   dfsan_label l1;
   dfsan_label l2;
-  u16 op;
-  u8 size;
-  u8 flipped;
   u64 op1;
   u64 op2;
+  u16 op;
+  u8 size;
+  u8 flags;
+  u32 tree_size;
+  void* expr;
 };
+
+#define B_FLIPPED 0x1
 
 #ifndef PATH_MAX
 # define PATH_MAX 4096

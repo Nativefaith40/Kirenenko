@@ -45,6 +45,8 @@
 
 #include <z3++.h>
 
+#include <unordered_map>
+
 using namespace __dfsan;
 
 typedef atomic_uint32_t atomic_dfsan_label;
@@ -68,6 +70,9 @@ static u32 __session_id;
 static u32 __current_index = 0;
 static z3::context __z3_context;
 static z3::solver __z3_solver(__z3_context, "QF_BV");
+
+// filter?
+static std::unordered_map<void*, u16> __branches;
 
 Flags __dfsan::flags_data;
 
@@ -136,8 +141,8 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
   if (l2 >= CONST_OFFSET) op2 = 0;
 
   struct dfsan_label_info label_info = {
-    .l1 = l1, .l2 = l2, .op = op, .size = size, .flipped = 0,
-    .op1 = op1, .op2 = op2};
+    .l1 = l1, .l2 = l2, .op1 = op1, .op2 = op2, .op = op, .size = size,
+    .flags = 0, .tree_size = 0, .expr = nullptr};
 
   __taint::option res = __union_table.lookup(label_info);
   if (res != __taint::none()) {
@@ -146,8 +151,8 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
     return label;
   }
   // for debugging
-  // dfsan_label l = atomic_load(&__dfsan_last_label, memory_order_relaxed);
-  // assert(l1 <= l && l2 <= l);
+  dfsan_label l = atomic_load(&__dfsan_last_label, memory_order_relaxed);
+  assert(l1 <= l && l2 <= l);
 
   dfsan_label label =
     atomic_fetch_add(&__dfsan_last_label, 1, memory_order_relaxed) + 1;
@@ -166,7 +171,6 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
   dfsan_label label0 = ls[0];
   if (label0 == kInitializingLabel) return kInitializingLabel;
 
-  AOUT("label0 = %d, n = %d, ls = %p\n", label0, n, ls);
   // for debugging
   // dfsan_label l = atomic_load(&__dfsan_last_label, memory_order_relaxed);
   // assert(label0 <= l);
@@ -183,6 +187,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
     }
     if (constant) return 0;
   }
+  AOUT("label0 = %d, n = %d, ls = %p\n", label0, n, ls);
   // same
   bool same = true;
   for (uptr i = 1; i != n; ++i) {
@@ -264,7 +269,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
-  AOUT("label = %d, n = %d, ls = %p\n", l, n, ls);
+  //AOUT("label = %d, n = %d, ls = %p\n", l, n, ls);
   if (l != kInitializingLabel) {
     // for debugging
     dfsan_label h = atomic_load(&__dfsan_last_label, memory_order_relaxed);
@@ -341,7 +346,7 @@ dfsan_label dfsan_create_label(off_t offset) {
   internal_memset(&__dfsan_label_info[label], 0, sizeof(dfsan_label_info));
   __dfsan_label_info[label].size = 1;
   // label may not equal to offset when using stdin
-  __dfsan_label_info[label].op1 = offset;  
+  __dfsan_label_info[label].op1 = offset;
   return label;
 }
 
@@ -477,16 +482,21 @@ static z3::expr serialize(dfsan_label label) {
     Report("WARNING: invalid label: %d\n", label);
     throw z3::exception("invalid label");
   }
-  
+
   dfsan_label_info *info = &__dfsan_label_info[label];
   AOUT("%u %u %u %u %u %llu %llu\n", label, info->l1, info->l2,
        info->op, info->size, info->op1, info->op2);
+
+  if (info->expr) {
+    return *reinterpret_cast<z3::expr*>(info->expr);
+  }
 
   // special ops
   if (info->op == 0) {
     // input
     z3::symbol symbol = __z3_context.int_symbol(info->op1);
     z3::sort sort = __z3_context.bv_sort(8);
+    info->tree_size = 1; // lazy init
     return __z3_context.constant(symbol, sort);
   } else if (info->op == Load) {
     u64 offset = __dfsan_label_info[info->l1].op1;
@@ -497,6 +507,7 @@ static z3::expr serialize(dfsan_label label) {
       symbol = __z3_context.int_symbol(offset + i);
       out = z3::concat(__z3_context.constant(symbol, sort), out);
     }
+    info->tree_size = 1; // lazy init
     return out;
   } else if (info->op == ZExt) {
     z3::expr base = serialize(info->l2);
@@ -504,21 +515,26 @@ static z3::expr serialize(dfsan_label label) {
       base = z3::ite(base, __z3_context.bv_val(1, 1),
                            __z3_context.bv_val(0, 1));
     u32 base_size = base.get_sort().bv_size();
+    info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return z3::zext(base, info->size * 8 - base_size);
   } else if (info->op == SExt) {
     z3::expr base = serialize(info->l2);
     u32 base_size = base.get_sort().bv_size();
+    info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return z3::sext(base, info->size * 8 - base_size);
   } else if (info->op == Trunc) {
     z3::expr base = serialize(info->l2);
+    info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8);
   } else if (info->op == Not) {
     assert(info->l1 != 0);
     z3::expr e = serialize(info->l1);
+    info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
     return ~e;
   } else if (info->op == Neg) {
     assert(info->l1 != 0);
     z3::expr e = serialize(info->l1);
+    info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
     return -e;
   }
   // higher-order
@@ -527,6 +543,7 @@ static z3::expr serialize(dfsan_label label) {
                    read_concrete(info->op1, info->size);
     assert(info->l2 >= CONST_OFFSET);
     z3::expr op2 = serialize(info->l2);
+    info->tree_size = 1; // lazy init
     return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
                                __z3_context.bv_val(1, 32));
   }
@@ -535,9 +552,20 @@ static z3::expr serialize(dfsan_label label) {
   u8 size = info->size * 8;
   if (!size) size = 1;
   z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, size);
-  if (info->l1 >= CONST_OFFSET) op1 = serialize(info->l1);
+  if (info->l1 >= CONST_OFFSET) {
+    op1 = serialize(info->l1).simplify();
+    // caching, in a ugly way
+    __dfsan_label_info[info->l1].expr = new z3::expr(op1);
+  }
   z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, size);
-  if (info->l2 >= CONST_OFFSET) op2 = serialize(info->l2);
+  if (info->l2 >= CONST_OFFSET) {
+    op2 = serialize(info->l2).simplify();
+    // caching, in a ugly way
+    __dfsan_label_info[info->l2].expr = new z3::expr(op2);
+  }
+  // update tree_size
+  info->tree_size = __dfsan_label_info[info->l1].tree_size +
+                    __dfsan_label_info[info->l2].tree_size;
 
   switch((info->op & 0xff)) {
     // llvm doesn't distinguish between logical and bitwise and/or/xor
@@ -650,14 +678,27 @@ __taint_trace_cond(dfsan_label label, u8 r) {
   if (label == 0)
     return;
 
-  if (__dfsan_label_info[label].flipped)
+  if ((__dfsan_label_info[label].flags & B_FLIPPED))
     return;
+
+  void *addr = __builtin_return_address(0);
+  if (__branches.find(addr) != __branches.end()) {
+    return;
+  }
+  __branches[addr] = 1;
 
   AOUT("solving cond: %u %u\n", label, r);
   bool pushed = false;
   try {
     z3::expr result = __z3_context.bool_val(r);
     z3::expr cond = serialize(label);
+
+#if 0
+    if (__dfsan_label_info[label].tree_size > 50000) {
+      // don't bother?
+      throw z3::exception("formula too large");
+    }
+#endif
 
     __z3_solver.push();
     pushed = true;
@@ -671,6 +712,7 @@ __taint_trace_cond(dfsan_label label, u8 r) {
     } else if (res == z3::unsat) {
       AOUT("branch not solvable\n");
       //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+      //AOUT("  tree_size = %d", __dfsan_label_info[label].tree_size);
     }
 
     __z3_solver.pop();
@@ -678,7 +720,7 @@ __taint_trace_cond(dfsan_label label, u8 r) {
     // nested branch
     __z3_solver.add(cond == result);
     // mark as flipped
-    __dfsan_label_info[label].flipped = 1;
+    __dfsan_label_info[label].flags |= B_FLIPPED;
   } catch (z3::exception e) {
     Report("WARNING: solving error: %s\n", e.msg());
   }
@@ -700,6 +742,8 @@ taint_set_file(const char *filename, int fd) {
   if (internal_strcmp(tainted.filename, path) == 0) {
     tainted.fd = fd;
     AOUT("fd:%d created\n", fd);
+
+    __z3_solver.set("timeout", 5000U);
   }
 }
 
@@ -800,7 +844,7 @@ static void InitializeTaintFile() {
     tainted.is_stdin = 0;
   }
 
-  if (!tainted.is_stdin) {
+  if (tainted.fd != -1 && !tainted.is_stdin) {
     for (off_t i = 0; i < tainted.size; i++) {
       dfsan_label label = dfsan_create_label(i);
       dfsan_check_label(label);
