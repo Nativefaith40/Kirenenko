@@ -828,6 +828,14 @@ static void InitializeTaintFile() {
     if (!fstat(0, &st)) {
       tainted.size = st.st_size;
       tainted.is_stdin = 0;
+      // map a copy
+      tainted.buf_size = RoundUpTo(st.st_size, GetPageSizeCached());
+      uptr map = internal_mmap(nullptr, tainted.buf_size, PROT_READ, MAP_PRIVATE, 0, 0);
+      if (internal_iserror(map)) {
+        Printf("FATAL: failed to map a copy of input file\n");
+        Die();
+      }
+      tainted.buf = reinterpret_cast<char *>(map);
     } else {
       tainted.size = 1;
       tainted.is_stdin = 1; // truly stdin
@@ -842,13 +850,6 @@ static void InitializeTaintFile() {
     stat(filename, &st);
     tainted.size = st.st_size;
     tainted.is_stdin = 0;
-  }
-
-  if (tainted.fd != -1 && !tainted.is_stdin) {
-    for (off_t i = 0; i < tainted.size; i++) {
-      dfsan_label label = dfsan_create_label(i);
-      dfsan_check_label(label);
-    }
     // map a copy
     tainted.buf = static_cast<char *>(
       MapFileToMemory(filename, &tainted.buf_size));
@@ -857,6 +858,13 @@ static void InitializeTaintFile() {
       Die();
     }
     AOUT("%s %lld size\n", filename, tainted.size);
+  }
+
+  if (tainted.fd != -1 && !tainted.is_stdin) {
+    for (off_t i = 0; i < tainted.size; i++) {
+      dfsan_label label = dfsan_create_label(i);
+      dfsan_check_label(label);
+    }
   }
 }
 
