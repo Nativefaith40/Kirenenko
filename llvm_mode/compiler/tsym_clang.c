@@ -38,12 +38,18 @@ static u8 is_cxx = 0;
 static void find_obj(u8 *argv0) {
 
   u8 *slash, *tmp;
-  slash = strrchr(argv0, '/');
+  u8 path[4096];
+
+  if (!realpath(argv0, path)) {
+    FATAL("Cannot get real path of the compiler (%s): %s", argv0, strerror(errno));
+  }
+
+  slash = strrchr(path, '/');
 
   if (slash) {
     u8 *dir;
     *slash = 0;
-    dir = ck_strdup(argv0);
+    dir = ck_strdup(path);
     *slash = '/';
 
     tmp = alloc_printf("%s/pass/libTaintPass.so", dir);
@@ -57,7 +63,7 @@ static void find_obj(u8 *argv0) {
     ck_free(dir);
   }
 
-  FATAL("Unable to find 'libTaintPass.so'");
+  FATAL("Unable to find 'libTaintPass.so' at %s", path);
 }
 
 static void check_type(char *name) {
@@ -67,7 +73,7 @@ static void check_type(char *name) {
   } else {
     clang_type = CLANG_DFSAN_TYPE;
   }
-  if (!strcmp(name, "angora-clang++")) {
+  if (!strcmp(name, "tsym-clang++")) {
     is_cxx = 1;
   }
 }
