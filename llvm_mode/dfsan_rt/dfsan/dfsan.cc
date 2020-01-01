@@ -126,6 +126,34 @@ static void dfsan_check_label(dfsan_label label) {
   }
 }
 
+// based on https://github.com/Cyan4973/xxHash
+// simplified since we only have 12 bytes info
+static inline u32 xxhash(u32 h1, u32 h2, u32 h3) {
+  const u32 PRIME32_1 = 2654435761U;
+  const u32 PRIME32_2 = 2246822519U;
+  const u32 PRIME32_3 = 3266489917U;
+  const u32 PRIME32_4 =  668265263U;
+  const u32 PRIME32_5 =  374761393U;
+
+  #define XXH_rotl32(x,r) ((x << r) | (x >> (32 - r)))
+  u32 h32 = PRIME32_5;
+  h32 += h1 * PRIME32_3;
+  h32  = XXH_rotl32(h32, 17) * PRIME32_4;
+  h32 += h2 * PRIME32_3;
+  h32  = XXH_rotl32(h32, 17) * PRIME32_4;
+  h32 += h3 * PRIME32_3;
+  h32  = XXH_rotl32(h32, 17) * PRIME32_4;
+  #undef XXH_rotl32
+
+  h32 ^= h32 >> 15;
+  h32 *= PRIME32_2;
+  h32 ^= h32 >> 13;
+  h32 *= PRIME32_3;
+  h32 ^= h32 >> 16;
+
+  return h32;
+}
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
                           u64 op1, u64 op2) {
@@ -142,7 +170,7 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
 
   struct dfsan_label_info label_info = {
     .l1 = l1, .l2 = l2, .op1 = op1, .op2 = op2, .op = op, .size = size,
-    .flags = 0, .tree_size = 0, .expr = nullptr};
+    .flags = 0, .tree_size = 0, .hash = 0, .expr = nullptr};
 
   __taint::option res = __union_table.lookup(label_info);
   if (res != __taint::none()) {
@@ -160,6 +188,13 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
   assert(label > l1 && label > l2);
 
   AOUT("%u = (%u, %u, %u, %u)\n", label, l1, l2, op, size);
+
+  // setup a hash tree for dedup
+  u32 h1 = l1 ? __dfsan_label_info[l1].hash : 0;
+  u32 h2 = l2 ? __dfsan_label_info[l2].hash : 0;
+  u32 h3 = op;
+  h3 = (h3 << 16) | size;
+  label_info.hash = xxhash(h1, h2, h3);
 
   internal_memcpy(&__dfsan_label_info[label], &label_info, sizeof(dfsan_label_info));
   __union_table.insert(&__dfsan_label_info[label], label);
