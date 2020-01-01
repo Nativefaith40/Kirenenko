@@ -1655,7 +1655,7 @@ __dfsw_mmap(void *start, size_t length, int prot, int flags, int fd,
   if (ret > 0) {
     off_t fsize = taint_get_file(fd);
     if (fsize) {
-      AOUT("mmap tainted file at addr %p, offset: %ld, length %ld \n",
+      AOUT("mmap tainted file at addr %p, offset: %lld, length %lld \n",
            ret, offset, length);
       size_t tainted_length = (offset + length) > fsize ? (fsize - offset)
                                                         : length;
@@ -1676,7 +1676,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_munmap(void *addr, size_t length, dfsan_label addr_label,
               dfsan_label length_label, dfsan_label *ret_label) {
   // clear sth
-  AOUT("munmap, addr %p, length %ld \n", addr, length);
+  AOUT("munmap, addr %p, length %lld \n", addr, length);
   int ret = munmap(addr, length);
   if (!ret) dfsan_set_label(0, addr, length);
   *ret_label = 0;
