@@ -333,6 +333,7 @@ class Taint : public ModulePass {
   Constant *TaintTraceCmpFn;
   Constant *TaintTraceCondFn;
   Constant *TaintDebugFn;
+  GlobalVariable *CallStack;
   MDNode *ColdCallWeights;
   TaintABIList ABIList;
   DenseMap<Value *, Function *> UnwrappedFnMap;
@@ -396,6 +397,7 @@ struct TaintFunction {
     // FIXME: Need to track down the register allocator issue which causes poor
     // performance in pathological cases with large numbers of basic blocks.
     AvoidNewBlocks = F->size() > 1000;
+    srandom(std::hash<std::string>{}(F->getName().str()));
   }
 
   Value *getArgTLSPtr();
@@ -704,7 +706,7 @@ Taint::buildWrapperFunction(Function *F, StringRef NewFName,
 }
 
 Constant *Taint::getOrBuildTrampolineFunction(FunctionType *FT,
-                                                          StringRef FName) {
+                                              StringRef FName) {
   FunctionType *FTT = getTrampolineFunctionType(FT);
   Constant *C = Mod->getOrInsertFunction(FName, FTT);
   Function *F = dyn_cast<Function>(C);
@@ -806,6 +808,17 @@ bool Taint::runOnModule(Module &M) {
 
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
+
+  CallStack = Mod->getGlobalVariable("__taint_trace_callstack");
+  if (!CallStack) {
+    CallStack =
+      new GlobalVariable(*Mod, PointerType::get(Int32Ty, 0), false,
+                         GlobalValue::CommonLinkage,
+                         ConstantInt::get(Int32Ty, 0),
+                         "__taint_trace_callstack",
+                         nullptr,
+                         GlobalValue::GeneralDynamicTLSModel);
+  }
 
   std::vector<Function *> FnsToInstrument;
   SmallPtrSet<Function *, 2> FnsWithNativeABI;
@@ -1536,6 +1549,26 @@ void TaintVisitor::visitCallSite(CallSite CS) {
     return;
 
   IRBuilder<> IRB(CS.getInstruction());
+
+  // update callstack ealier here
+  ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
+  LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
+  LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+  Value *NCS = IRB.CreateXor(LCS, CID);
+  StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
+  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+
+  // after callsite
+  IRB.SetInsertPoint(CS.getInstruction()->getNextNode());
+  Value *RCS = IRB.CreateXor(NCS, CID);
+  SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
+  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+
+  // reset IRB
+  IRB.SetInsertPoint(CS.getInstruction());
 
   DenseMap<Value *, Function *>::iterator i =
       TF.TT.UnwrappedFnMap.find(CS.getCalledValue());

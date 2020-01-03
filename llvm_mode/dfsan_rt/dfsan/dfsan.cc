@@ -46,6 +46,7 @@
 #include <z3++.h>
 
 #include <unordered_map>
+#include <utility>
 
 using namespace __dfsan;
 
@@ -72,7 +73,15 @@ static z3::context __z3_context;
 static z3::solver __z3_solver(__z3_context, "QF_BV");
 
 // filter?
-static std::unordered_map<void*, u16> __branches;
+__thread u32 __taint_trace_callstack;
+typedef std::pair<u32, void*> trace_context;
+struct context_hash {
+  std::size_t operator()(const trace_context &context) const {
+    return std::hash<u32>{}(context.first) ^ std::hash<void*>{}(context.second);
+  }
+};
+static std::unordered_map<trace_context, u16, context_hash> __branches;
+static const u16 MAX_BRANCH_COUNT = 16;
 
 Flags __dfsan::flags_data;
 
@@ -717,12 +726,16 @@ __taint_trace_cond(dfsan_label label, u8 r) {
     return;
 
   void *addr = __builtin_return_address(0);
-  if (__branches.find(addr) != __branches.end()) {
+  auto itr = __branches.find({__taint_trace_callstack, addr});
+  if (itr == __branches.end()) {
+    itr = __branches.insert({{__taint_trace_callstack, addr}, 1}).first;
+  } else if (itr->second < MAX_BRANCH_COUNT) {
+    itr->second += 1;
+  } else {
     return;
   }
-  __branches[addr] = 1;
 
-  AOUT("solving cond: %u %u\n", label, r);
+  AOUT("solving cond: %u %u %u %p %u\n", label, r, __taint_trace_callstack, addr, itr->second);
   bool pushed = false;
   try {
     z3::expr result = __z3_context.bool_val(r);
