@@ -1,4 +1,4 @@
-# TTFuzz
+# Kirenenko
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
@@ -26,7 +26,7 @@ export PATH=/path-to-clang/bin:$PATH
 export LD_LIBRARY_PATH=/path-to-clang/lib:$LD_LIBRARY_PATH
 ```
 
-### Fuzzer Compilation
+### Compilation
 
 The build script will resolve most dependencies and setup the 
 runtime environment.
