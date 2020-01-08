@@ -108,6 +108,10 @@ inline const dfsan_label *shadow_for(const void *ptr) {
   return shadow_for(const_cast<void *>(ptr));
 }
 
+inline void *app_for(const dfsan_label *l) {
+  return (void *) ((((uptr) l) >> 2) | AppBaseAddr());
+}
+
 struct Flags {
 #define DFSAN_FLAG(Type, Name, DefaultValue, Description) Type Name;
 #include "dfsan_flags.inc"

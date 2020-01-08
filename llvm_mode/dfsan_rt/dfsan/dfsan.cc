@@ -263,14 +263,16 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
   // shape
   bool shape = true;
   uptr shape_ext = 0;
-  if (tainted.size != 0 && label0 >= (CONST_OFFSET + tainted.size)) {
+  if (__dfsan_label_info[label0].op != 0) {
+    // not raw input bytes
     shape = false;
   } else {
+    off_t offset = __dfsan_label_info[label0].op1;
     for (uptr i = 1; i != n; ++i) {
       dfsan_label next_label = ls[i];
       if (next_label == kInitializingLabel) return kInitializingLabel;
       else if (next_label == 0) ++shape_ext;
-      else if (next_label != label0 + i) {
+      else if (__dfsan_label_info[next_label].op1 != offset + i) {
         shape = false;
         break;
       }
@@ -296,14 +298,21 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
     dfsan_label label = label0;
     for (uptr i = __dfsan_label_info[label0].size; i < n;) {
       dfsan_label next_label = ls[i];
-      AOUT("%u ", next_label);
+      AOUT("%u\n", next_label);
       if (next_label != 0) {
-        i += __dfsan_label_info[next_label].size;
-        if (i > n) Report("WARNING: partial loading %d %d\n", i,  n);
-        label = __taint_union(label, next_label, Concat, i, 0, 0);
+        if (__dfsan_label_info[next_label].size <= n - i) {
+          i += __dfsan_label_info[next_label].size;
+          label = __taint_union(label, next_label, Concat, i, 0, 0);
+        } else {
+          Report("WARNING: partial loading %d %d\n", n-i, __dfsan_label_info[next_label].size);
+          uptr size = n - i;
+          dfsan_label trunc = __taint_union(0, next_label, Trunc, size, 0, 0);
+          return __taint_union(label, trunc, Concat, n, 0, 0);
+        }
       } else {
         ++i;
-        label = __taint_union(0, label, ZExt, i, 0, 0);
+        char *c = (char *)app_for(&ls[i]);
+        label = __taint_union(label, 0, Concat, i, 0, *c);
       }
     }
     AOUT("\n");
@@ -595,11 +604,20 @@ static z3::expr serialize(dfsan_label label) {
   // common ops
   u8 size = info->size * 8;
   if (!size) size = 1;
+  // size for concat is a bit complicated ...
+  if (info->op == Concat && info->l1 == 0) {
+    assert(info->l2 >= CONST_OFFSET);
+    size = (info->size - __dfsan_label_info[info->l2].size) * 8;
+  }
   z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, size);
   if (info->l1 >= CONST_OFFSET) {
     op1 = serialize(info->l1).simplify();
     // caching, in a ugly way
     __dfsan_label_info[info->l1].expr = new z3::expr(op1);
+  }
+  if (info->op == Concat && info->l2 == 0) {
+    assert(info->l1 >= CONST_OFFSET);
+    size = (info->size - __dfsan_label_info[info->l1].size) * 8;
   }
   z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, size);
   if (info->l2 >= CONST_OFFSET) {
