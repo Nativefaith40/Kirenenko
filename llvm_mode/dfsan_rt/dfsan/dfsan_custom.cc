@@ -155,6 +155,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_memcmp(const void *s1, const void *s2,
   CALL_WEAK_INTERCEPTOR_HOOK(dfsan_weak_hook_memcmp, GET_CALLER_PC(), s1, s2, n,
                              s1_label, s2_label, n_label);
   int ret = memcmp(s1, s2, n);
+  AOUT("memcmp: n = %d\n", n);
   dfsan_label ls1 = dfsan_read_label(s1, n);
   dfsan_label ls2 = dfsan_read_label(s2, n);
   // ugly hack ...
@@ -174,8 +175,9 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_strcmp(const char *s1, const char *s2,
                              s1_label, s2_label);
   int ret = strcmp(s1, s2);
   // check which one is tainted
+  AOUT("strcmp: %s <=> %s\n", s1, s2);
   size_t size = strlen(s1) + 1; // including tailing '\0'
-  if (dfsan_get_label(s1) == 0)
+  if (dfsan_get_label(s1) != 0)
     size = strlen(s2) + 1; // including tailing '\0'
   dfsan_label ls1 = dfsan_read_label(s1, size);
   dfsan_label ls2 = dfsan_read_label(s2, size);
@@ -224,6 +226,11 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_strncmp(const char *s1, const char *s2,
                              n, s1_label, s2_label, n_label);
 
   int ret = strncmp(s1, s2, n);
+  AOUT("%s <=> %s\n", s1, s2);
+  if (dfsan_get_label(s1) == 0 && strlen(s1) < (n - 1))
+    n = strlen(s1) + 1;
+  if (dfsan_get_label(s2) == 0 && strlen(s2) < (n - 1))
+    n = strlen(s2) + 1;
   dfsan_label ls1 = dfsan_read_label(s1, n);
   dfsan_label ls2 = dfsan_read_label(s2, n);
   // ugly hack ...
