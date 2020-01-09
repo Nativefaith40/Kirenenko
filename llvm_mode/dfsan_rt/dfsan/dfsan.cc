@@ -294,7 +294,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
     }
     return ret;
   } else {
-    Report("WARNING: union load\n");
+    Report("WARNING: union load at %p\n", __builtin_return_address(0));
     dfsan_label label = label0;
     for (uptr i = __dfsan_label_info[label0].size; i < n;) {
       dfsan_label next_label = ls[i];
@@ -340,10 +340,13 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
     }
     case ZExt: {
       dfsan_label orig = __dfsan_label_info[l].l2;
-      for (uptr i = __dfsan_label_info[orig].size; i < n; ++i)
-        ls[i] = 0;
-      __taint_union_store(orig, ls, __dfsan_label_info[orig].size);
-      break;
+      // size of ICmp result is different so just fall through to default
+      if ((__dfsan_label_info[orig].op & 0xff) != ICmp) {
+        for (uptr i = __dfsan_label_info[orig].size; i < n; ++i)
+          ls[i] = 0;
+        __taint_union_store(orig, ls, __dfsan_label_info[orig].size);
+        break;
+      }
     }
     default: {
       for (uptr i = 0; i < n; ++i)
@@ -670,7 +673,7 @@ static void generate_input() {
       throw z3::exception("failed to copy original input\n");
     }
   } else {
-    // FIXME input is stdin
+    // FIXME: input is stdin
     throw z3::exception("original input is stdin");
   }
 
@@ -728,7 +731,7 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
     // nested branch
     __z3_solver.add(pe == result);
   } catch (z3::exception e) {
-    Report("WARNING: solving error: %s\n", e.msg());
+    Report("WARNING: solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
   }
   
   if (pushed) __z3_solver.pop();
@@ -788,7 +791,7 @@ __taint_trace_cond(dfsan_label label, u8 r) {
     // mark as flipped
     __dfsan_label_info[label].flags |= B_FLIPPED;
   } catch (z3::exception e) {
-    Report("WARNING: solving error: %s\n", e.msg());
+    Report("WARNING: solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
   }
   
   if (pushed) __z3_solver.pop();
