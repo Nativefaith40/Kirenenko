@@ -528,6 +528,7 @@ static z3::expr get_cmd(z3::expr const &lhs, z3::expr const &rhs, u32 predicate)
     case bvsle: return lhs <= rhs;
     default:
       Printf("FATAL: unsupported predicate: %u\n", predicate);
+      throw z3::exception("unsupported predicate");
       break;
   }
   // should never reach here
@@ -589,12 +590,16 @@ static z3::expr serialize(dfsan_label label) {
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return cache_expr(info, base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8));
   } else if (info->op == Not) {
-    assert(info->l1 != 0);
+    if (info->l2 == 0) {
+      throw z3::exception("invalid Not operation");
+    }
     z3::expr e = serialize(info->l1);
     info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
     return cache_expr(info, ~e);
   } else if (info->op == Neg) {
-    assert(info->l2 != 0);
+    if (info->l2 == 0) {
+      throw z3::exception("invalid Neg predicate");
+    }
     z3::expr e = serialize(info->l2);
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return cache_expr(info, -e);
@@ -603,7 +608,9 @@ static z3::expr serialize(dfsan_label label) {
   else if (info->op == fmemcmp) {
     z3::expr op1 = (info->l1 >= CONST_OFFSET) ? serialize(info->l1) :
                    read_concrete(info->op1, info->size);
-    assert(info->l2 >= CONST_OFFSET);
+    if (info->l2 < CONST_OFFSET) {
+      throw z3::exception("invalid memcmp operand2");
+    }
     z3::expr op2 = serialize(info->l2);
     info->tree_size = 1; // lazy init
     // don't cache becaue of read_concrete?
@@ -656,6 +663,7 @@ static z3::expr serialize(dfsan_label label) {
     case Concat:  return cache_expr(info, z3::concat(op2, op1));
     default:
       Printf("FATAL: unsupported op: %u\n", info->op);
+      throw z3::exception("unsupported operator");
       break;
   }
   // should never reach here
