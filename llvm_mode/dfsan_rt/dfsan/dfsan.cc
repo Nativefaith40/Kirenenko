@@ -82,7 +82,7 @@ struct context_hash {
 };
 static std::unordered_map<trace_context, u16, context_hash> __branches;
 static const u16 MAX_BRANCH_COUNT = 16;
-static const u32 MAX_GEP_INDEX = 1024;
+static const u64 MAX_GEP_INDEX = 0x10000;
 
 Flags __dfsan::flags_data;
 
@@ -589,9 +589,9 @@ static z3::expr serialize(dfsan_label label) {
     info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
     return ~e;
   } else if (info->op == Neg) {
-    assert(info->l1 != 0);
-    z3::expr e = serialize(info->l1);
-    info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
+    assert(info->l2 != 0);
+    z3::expr e = serialize(info->l2);
+    info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return -e;
   }
   // higher-order
@@ -822,29 +822,22 @@ __taint_trace_gep(dfsan_label label, u64 r) {
     z3::expr index = serialize(label);
     z3::expr result = __z3_context.bv_val((uint64_t)r, size);
 
-    for (u32 i = 0; i < MAX_GEP_INDEX; ++i) {
-      if ((u64)i == r) continue;
+    __z3_solver.push();
+    pushed = true;
+    __z3_solver.add(index > result);
+    z3::check_result res = __z3_solver.check();
 
-      z3::expr c = __z3_context.bv_val((uint64_t)i, size);
-      __z3_solver.push();
-      pushed = true;
-      __z3_solver.add(index == c);
-      z3::check_result res = __z3_solver.check();
-
+    //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+    if (res == z3::sat) {
+      AOUT("\tindex > %lld solved\n", r);
+      generate_input();
+    } else if (res == z3::unsat) {
+      AOUT("\tindex = %lld not possible\n", r);
       //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-      if (res == z3::sat) {
-        AOUT("\tindex = %d solved\n", i);
-        generate_input();
-      } else if (res == z3::unsat) {
-        AOUT("\tindex = %d not possible\n", i);
-        //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-        __z3_solver.pop();
-        pushed = false;
-        break;
-      }
-      __z3_solver.pop();
-      pushed = false;
     }
+    __z3_solver.pop();
+    pushed = false;
+
     // preserve
     __z3_solver.add(index == result);
     // mark as visited
