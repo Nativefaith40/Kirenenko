@@ -850,7 +850,7 @@ __taint_trace_gep(dfsan_label label, u64 r) {
       z3::model m = __z3_solver.get_model();
       generate_input(m);
     } else if (res == z3::unsat) {
-      AOUT("\tindex = %lld not possible\n", r);
+      AOUT("\tindex > %lld not possible\n", r);
 
       // optimistic?
       z3::solver solver = z3::solver(__z3_context, "QF_BV");

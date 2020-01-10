@@ -1410,8 +1410,23 @@ void TaintVisitor::visitSwitchInst(SwitchInst &SWI) {
 
 void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
   IRBuilder<> IRB(I);
+  Type *ET = I->getPointerOperandType();
   for (auto &idx: I->indices()) {
     Value *Index = &*idx;
+    CompositeType *CT = dyn_cast<CompositeType>(ET);
+    if (!CT) {
+      // at least pointer type?
+      if (PointerType *PT = dyn_cast<PointerType>(ET)) {
+        ET = PT->getElementType();
+        continue;
+      } else {
+        break;
+      }
+    }
+    ET = CT->getTypeAtIndex(Index);
+    if (isa<Constant>(Index)) continue;
+    if (!CT->isArrayTy()) continue; // only care about array?
+
     Value *Shadow = getShadow(Index);
     if (Shadow != TT.ZeroShadow) {
       Index = IRB.CreateZExtOrTrunc(Index, TT.Int64Ty);
