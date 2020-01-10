@@ -514,7 +514,7 @@ static z3::expr read_concrete(u64 addr, u8 size) {
   return val;
 }
 
-static z3::expr get_cmd(z3::expr &lhs, z3::expr &rhs, u32 predicate) {
+static z3::expr get_cmd(z3::expr const &lhs, z3::expr const &rhs, u32 predicate) {
   switch (predicate) {
     case bveq:  return lhs == rhs;
     case bvneq: return lhs != rhs;
@@ -532,6 +532,11 @@ static z3::expr get_cmd(z3::expr &lhs, z3::expr &rhs, u32 predicate) {
   }
   // should never reach here
   Die();
+}
+
+static inline z3::expr cache_expr(dfsan_label_info *info, z3::expr const &e) {
+  info->expr = new z3::expr(e);
+  return e;
 }
 
 static z3::expr serialize(dfsan_label label) {
@@ -554,7 +559,7 @@ static z3::expr serialize(dfsan_label label) {
     z3::symbol symbol = __z3_context.int_symbol(info->op1);
     z3::sort sort = __z3_context.bv_sort(8);
     info->tree_size = 1; // lazy init
-    return __z3_context.constant(symbol, sort);
+    return cache_expr(info, __z3_context.constant(symbol, sort));
   } else if (info->op == Load) {
     u64 offset = __dfsan_label_info[info->l1].op1;
     z3::symbol symbol = __z3_context.int_symbol(offset);
@@ -565,7 +570,7 @@ static z3::expr serialize(dfsan_label label) {
       out = z3::concat(__z3_context.constant(symbol, sort), out);
     }
     info->tree_size = 1; // lazy init
-    return out;
+    return cache_expr(info, out);
   } else if (info->op == ZExt) {
     z3::expr base = serialize(info->l2);
     if (base.is_bool()) // dirty hack since llvm lacks bool
@@ -573,26 +578,26 @@ static z3::expr serialize(dfsan_label label) {
                            __z3_context.bv_val(0, 1));
     u32 base_size = base.get_sort().bv_size();
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
-    return z3::zext(base, info->size * 8 - base_size);
+    return cache_expr(info, z3::zext(base, info->size * 8 - base_size));
   } else if (info->op == SExt) {
     z3::expr base = serialize(info->l2);
     u32 base_size = base.get_sort().bv_size();
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
-    return z3::sext(base, info->size * 8 - base_size);
+    return cache_expr(info, z3::sext(base, info->size * 8 - base_size));
   } else if (info->op == Trunc) {
     z3::expr base = serialize(info->l2);
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
-    return base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8);
+    return cache_expr(info, base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8));
   } else if (info->op == Not) {
     assert(info->l1 != 0);
     z3::expr e = serialize(info->l1);
     info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
-    return ~e;
+    return cache_expr(info, ~e);
   } else if (info->op == Neg) {
     assert(info->l2 != 0);
     z3::expr e = serialize(info->l2);
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
-    return -e;
+    return cache_expr(info, -e);
   }
   // higher-order
   else if (info->op == fmemcmp) {
@@ -601,6 +606,7 @@ static z3::expr serialize(dfsan_label label) {
     assert(info->l2 >= CONST_OFFSET);
     z3::expr op2 = serialize(info->l2);
     info->tree_size = 1; // lazy init
+    // don't cache becaue of read_concrete?
     return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
                                __z3_context.bv_val(1, 32));
   }
@@ -616,8 +622,6 @@ static z3::expr serialize(dfsan_label label) {
   z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, size);
   if (info->l1 >= CONST_OFFSET) {
     op1 = serialize(info->l1).simplify();
-    // caching, in a ugly way
-    __dfsan_label_info[info->l1].expr = new z3::expr(op1);
   }
   if (info->op == Concat && info->l2 == 0) {
     assert(info->l1 >= CONST_OFFSET);
@@ -626,8 +630,6 @@ static z3::expr serialize(dfsan_label label) {
   z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, size);
   if (info->l2 >= CONST_OFFSET) {
     op2 = serialize(info->l2).simplify();
-    // caching, in a ugly way
-    __dfsan_label_info[info->l2].expr = new z3::expr(op2);
   }
   // update tree_size
   info->tree_size = __dfsan_label_info[info->l1].tree_size +
@@ -635,23 +637,23 @@ static z3::expr serialize(dfsan_label label) {
 
   switch((info->op & 0xff)) {
     // llvm doesn't distinguish between logical and bitwise and/or/xor
-    case And:     return info->size ? (op1 & op2) : (op1 && op2);
-    case Or:      return info->size ? (op1 | op2) : (op1 || op2);
-    case Xor:     return op1 ^ op2;
-    case Shl:     return z3::shl(op1, op2);
-    case LShr:    return z3::lshr(op1, op2);
-    case AShr:    return z3::ashr(op1, op2);
-    case Add:     return op1 + op2;
-    case Sub:     return op1 - op2;
-    case Mul:     return op1 * op2;
-    case UDiv:    return z3::udiv(op1, op2);
-    case SDiv:    return op1 / op2;
-    case URem:    return z3::urem(op1, op2);
-    case SRem:    return z3::srem(op1, op2);
+    case And:     return cache_expr(info, info->size ? (op1 & op2) : (op1 && op2));
+    case Or:      return cache_expr(info, info->size ? (op1 | op2) : (op1 || op2));
+    case Xor:     return cache_expr(info, op1 ^ op2);
+    case Shl:     return cache_expr(info, z3::shl(op1, op2));
+    case LShr:    return cache_expr(info, z3::lshr(op1, op2));
+    case AShr:    return cache_expr(info, z3::ashr(op1, op2));
+    case Add:     return cache_expr(info, op1 + op2);
+    case Sub:     return cache_expr(info, op1 - op2);
+    case Mul:     return cache_expr(info, op1 * op2);
+    case UDiv:    return cache_expr(info, z3::udiv(op1, op2));
+    case SDiv:    return cache_expr(info, op1 / op2);
+    case URem:    return cache_expr(info, z3::urem(op1, op2));
+    case SRem:    return cache_expr(info, z3::srem(op1, op2));
     // relational
-    case ICmp:    return get_cmd(op1, op2, info->op >> 8);
+    case ICmp:    return cache_expr(info, get_cmd(op1, op2, info->op >> 8));
     // concat
-    case Concat:  return z3::concat(op2, op1);
+    case Concat:  return cache_expr(info, z3::concat(op2, op1));
     default:
       Printf("FATAL: unsupported op: %u\n", info->op);
       break;
