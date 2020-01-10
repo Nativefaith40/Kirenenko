@@ -1,0 +1,216 @@
+--- orig/afl-fuzz.c	2017-11-04 19:25:56.000000000 -0700
++++ afl-2.52b/afl-fuzz.c	2020-01-09 23:34:18.101168151 -0800
+@@ -89,7 +89,9 @@
+           *in_bitmap,                 /* Input bitmap                     */
+           *doc_path,                  /* Path to documentation dir        */
+           *target_path,               /* Path to target binary            */
+-          *orig_cmdline;              /* Original command line            */
++          *orig_cmdline,              /* Original command line            */
++          *taint_binary,              /* Taint binary                     */
++          *taint_options;             /* Taint options                    */
+ 
+ EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
+ static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
+@@ -235,7 +237,8 @@
+       has_new_cov,                    /* Triggers new coverage?           */
+       var_behavior,                   /* Variable behavior?               */
+       favored,                        /* Currently favored?               */
+-      fs_redundant;                   /* Marked as redundant in the fs?   */
++      fs_redundant,                   /* Marked as redundant in the fs?   */
++      taint_analyzed;                 /* Has been taint analyzed          */
+ 
+   u32 bitmap_size,                    /* Number of bits set in bitmap     */
+       exec_cksum;                     /* Checksum of the execution trace  */
+@@ -299,7 +302,8 @@
+   /* 13 */ STAGE_EXTRAS_UI,
+   /* 14 */ STAGE_EXTRAS_AO,
+   /* 15 */ STAGE_HAVOC,
+-  /* 16 */ STAGE_SPLICE
++  /* 16 */ STAGE_SPLICE,
++  /* 17 */ STAGE_TAINT
+ };
+ 
+ /* Stage value types */
+@@ -781,6 +785,7 @@
+   q->len          = len;
+   q->depth        = cur_depth + 1;
+   q->passed_det   = passed_det;
++  q->taint_analyzed = 0;
+ 
+   if (q->depth > max_depth) max_depth = q->depth;
+ 
+@@ -4240,9 +4245,10 @@
+        "  imported : " cRST "%-10s " bSTG bV "\n", tmp,
+        sync_id ? DI(queued_imported) : (u8*)"n/a");
+ 
+-  sprintf(tmp, "%s/%s, %s/%s",
++  sprintf(tmp, "%s/%s, %s/%s, %s/%s",
+           DI(stage_finds[STAGE_HAVOC]), DI(stage_cycles[STAGE_HAVOC]),
+-          DI(stage_finds[STAGE_SPLICE]), DI(stage_cycles[STAGE_SPLICE]));
++          DI(stage_finds[STAGE_SPLICE]), DI(stage_cycles[STAGE_SPLICE]),
++          DI(stage_finds[STAGE_TAINT]), DI(stage_cycles[STAGE_TAINT]));
+ 
+   SAYF(bV bSTOP "       havoc : " cRST "%-37s " bSTG bV bSTOP, tmp);
+ 
+@@ -6049,6 +6055,104 @@
+ 
+ havoc_stage:
+ 
++  stage_name  = "taint";
++  stage_short = "taint";
++
++  orig_hit_cnt = queued_paths + unique_crashes;
++
++  if (taint_binary && !queue_cur->taint_analyzed) {
++
++    /* Use the original input */
++    write_to_testcase(in_buf, len);
++    int pid = fork();
++
++    if (pid < 0) PFATAL("fork() failed");
++
++    if (!pid) {
++
++      struct rlimit r;
++
++      r.rlim_max = r.rlim_cur = 0;
++
++      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
++
++      /* Isolate the process and configure standard descriptors. If out_file is
++         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
++
++      setsid();
++
++      dup2(dev_null_fd, 1);
++      dup2(dev_null_fd, 2);
++
++      if (out_file) {
++
++        dup2(dev_null_fd, 0);
++
++      } else {
++
++        dup2(out_fd, 0);
++        close(out_fd);
++
++      }
++
++      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
++
++      close(dev_null_fd);
++      close(out_dir_fd);
++      close(dev_urandom_fd);
++      close(fileno(plot_file));
++
++      /* Set TAINT options. */
++
++      setenv("TAINT_OPTIONS", taint_options, 1);
++
++      *(u32*)trace_bits = 0;
++
++      argv[0] = taint_binary;
++      execv(taint_binary, argv);
++
++      *(u32*)trace_bits = EXEC_FAIL_SIG;
++      exit(0);
++
++    }
++
++    int status;
++    if (waitpid(pid, &status, 0) <= 0) PFATAL("waitpid() failed");
++
++    u32 tb4 = *(u32*)trace_bits;
++
++    if (WIFEXITED(status) && tb4 != EXEC_FAIL_SIG) {
++
++      // mutation succeed
++      for (u32 i = 0; i < tb4; ++i) {
++
++        u8 *try = alloc_printf("%s/tmp/id-%d-0-%d", out_dir, getpid(), i);
++        
++        int fd = open(try, O_RDONLY);
++        if (fd < 0) PFATAL("no file to try %s", try);
++
++        u8* buff = mmap(0, len, PROT_READ, MAP_PRIVATE, fd, 0);
++
++        close(fd);
++        ck_free(try);
++
++        common_fuzz_stuff(argv, buff, len);
++
++        munmap(buff, len);
++
++      }
++    }
++
++    queue_cur->taint_analyzed = 1;
++
++    new_hit_cnt = queued_paths + unique_crashes;
++
++    stage_finds[STAGE_TAINT]  += new_hit_cnt - orig_hit_cnt;
++    stage_cycles[STAGE_TAINT] += tb4;
++
++  }
++
++  /* real havoc */
+   stage_cur_byte = -1;
+ 
+   /* The havoc stage mutation code is also invoked when splicing files; if the
+@@ -7060,7 +7164,8 @@
+ 
+        "  -d            - quick & dirty mode (skips deterministic steps)\n"
+        "  -n            - fuzz without instrumentation (dumb mode)\n"
+-       "  -x dir        - optional fuzzer dictionary (see README)\n\n"
++       "  -x dir        - optional fuzzer dictionary (see README)\n"
++       "  -b taint      - taint binary\n\n"
+ 
+        "Other stuff:\n\n"
+ 
+@@ -7174,6 +7279,11 @@
+   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+   ck_free(tmp);
+ 
++  /* Temporary directory for taint output. */
++  tmp = alloc_printf("%s/tmp", out_dir);
++  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
++  ck_free(tmp);
++
+   /* Generally useful file descriptors. */
+ 
+   dev_null_fd = open("/dev/null", O_RDWR);
+@@ -7723,7 +7833,7 @@
+   gettimeofday(&tv, &tz);
+   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
+ 
+-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
++  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qb:")) > 0)
+ 
+     switch (opt) {
+ 
+@@ -7891,6 +8001,12 @@
+ 
+         break;
+ 
++      case 'b': /* taint binary path */
++
++        if (taint_binary) FATAL("Multiple -b options not supported");
++        taint_binary = optarg;
++        break;
++
+       default:
+ 
+         usage(argv[0]);
+@@ -7969,6 +8085,12 @@
+ 
+   if (!out_file) setup_stdio_file();
+ 
++  if (taint_binary) {
++    u8 *taint_file = out_file ? out_file : (u8*)"stdin";
++    taint_options = alloc_printf("taint_file=%s:output_dir=%s/tmp:instance_id=%d",
++                                 taint_file, out_dir, getpid());
++  }
++
+   check_binary(argv[optind]);
+ 
+   start_time = get_cur_time();
