@@ -660,7 +660,7 @@ static z3::expr serialize(dfsan_label label) {
   Die();
 }
 
-static void generate_input() {
+static void generate_input(z3::model &m) {
   char path[PATH_MAX];
   internal_snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", __output_dir,
                     __instance_id, __session_id, __current_index++);
@@ -679,7 +679,6 @@ static void generate_input() {
   }
 
   // from qsym
-  z3::model m = __z3_solver.get_model();
   unsigned num_constants = m.num_consts();
   for (unsigned i = 0; i < num_constants; i++) {
     z3::func_decl decl = m.get_const_decl(i);
@@ -722,9 +721,18 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
     //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
     if (res == z3::sat) {
       AOUT("solved\n");
-      generate_input();
+      z3::model m = __z3_solver.get_model();
+      generate_input(m);
     } else if (res == z3::unsat) {
       AOUT("branch not solvable\n");
+
+      // optimistic?
+      z3::solver solver = z3::solver(__z3_context, "QF_BV");
+      solver.add(pe != result);
+      if (solver.check() == z3::sat) {
+        z3::model m = solver.get_model();
+        generate_input(m);
+      }
     }
 
     __z3_solver.pop();
@@ -778,11 +786,20 @@ __taint_trace_cond(dfsan_label label, u8 r) {
     //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
     if (res == z3::sat) {
       AOUT("branch solved\n");
-      generate_input();
+      z3::model m = __z3_solver.get_model();
+      generate_input(m);
     } else if (res == z3::unsat) {
       AOUT("branch not solvable\n");
       //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
       //AOUT("  tree_size = %d", __dfsan_label_info[label].tree_size);
+
+      // optimistic?
+      z3::solver solver = z3::solver(__z3_context, "QF_BV");
+      solver.add(cond != result);
+      if (solver.check() == z3::sat) {
+        z3::model m = solver.get_model();
+        generate_input(m);
+      }
     }
 
     __z3_solver.pop();
@@ -830,10 +847,18 @@ __taint_trace_gep(dfsan_label label, u64 r) {
     //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
     if (res == z3::sat) {
       AOUT("\tindex > %lld solved\n", r);
-      generate_input();
+      z3::model m = __z3_solver.get_model();
+      generate_input(m);
     } else if (res == z3::unsat) {
       AOUT("\tindex = %lld not possible\n", r);
-      //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+
+      // optimistic?
+      z3::solver solver = z3::solver(__z3_context, "QF_BV");
+      solver.add(index > result);
+      if (solver.check() == z3::sat) {
+        z3::model m = solver.get_model();
+        generate_input(m);
+      }
     }
     __z3_solver.pop();
     pushed = false;
