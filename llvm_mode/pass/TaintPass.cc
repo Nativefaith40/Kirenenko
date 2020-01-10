@@ -321,6 +321,8 @@ class Taint : public ModulePass {
   FunctionType *TaintVarargWrapperFnTy;
   FunctionType *TaintTraceCmpFnTy;
   FunctionType *TaintTraceCondFnTy;
+  FunctionType *TaintTraceIndirectCallFnTy;
+  FunctionType *TaintTraceGEPFnTy;
   FunctionType *TaintDebugFnTy;
   Constant *TaintUnionFn;
   Constant *TaintCheckedUnionFn;
@@ -332,6 +334,8 @@ class Taint : public ModulePass {
   Constant *TaintVarargWrapperFn;
   Constant *TaintTraceCmpFn;
   Constant *TaintTraceCondFn;
+  Constant *TaintTraceIndirectCallFn;
+  Constant *TaintTraceGEPFn;
   Constant *TaintDebugFn;
   GlobalVariable *CallStack;
   MDNode *ColdCallWeights;
@@ -418,6 +422,7 @@ struct TaintFunction {
   void visitCmpInst(CmpInst *I);
   void visitSwitchInst(SwitchInst *I);
   void visitCondition(Value *Cond, Instruction *I);
+  void visitGEPInst(GetElementPtrInst *I);
 };
 
 class TaintVisitor : public InstVisitor<TaintVisitor> {
@@ -602,6 +607,10 @@ bool Taint::doInitialization(Module &M) {
   Type *TaintTraceCondArgs[2] = { ShadowTy, Int8Ty };
   TaintTraceCondFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCondArgs, false);
+  TaintTraceIndirectCallFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), { ShadowTy }, false);
+  TaintTraceGEPFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), { ShadowTy, Int64Ty }, false);
 
   TaintDebugFnTy = FunctionType::get(Type::getVoidTy(*Ctx),
       {ShadowTy, ShadowTy, ShadowTy, ShadowTy, ShadowTy}, false);
@@ -805,6 +814,10 @@ bool Taint::runOnModule(Module &M) {
     Mod->getOrInsertFunction("__taint_trace_cmp", TaintTraceCmpFnTy);
   TaintTraceCondFn =
     Mod->getOrInsertFunction("__taint_trace_cond", TaintTraceCondFnTy);
+  TaintTraceIndirectCallFn =
+    Mod->getOrInsertFunction("__taint_trace_indcall", TaintTraceIndirectCallFnTy);
+  TaintTraceGEPFn =
+    Mod->getOrInsertFunction("__taint_trace_gep", TaintTraceGEPFnTy);
 
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
@@ -834,8 +847,9 @@ bool Taint::runOnModule(Module &M) {
         &i != TaintVarargWrapperFn &&
         &i != TaintTraceCmpFn &&
         &i != TaintTraceCondFn &&
+        &i != TaintTraceIndirectCallFn &&
+        &i != TaintTraceGEPFn &&
         &i != TaintDebugFn &&
-        //&i != TaintStoreShadowFn &&
         &i != TaintUnionStoreFn) {
       FnsToInstrument.push_back(&i);
     }
@@ -1249,7 +1263,7 @@ void TaintVisitor::visitLoadInst(LoadInst &LI) {
   IRBuilder<> IRB(&LI);
   Value *Shadow = TF.loadShadow(LI.getPointerOperand(), Size, Align, &LI);
 #if 0
-  //FIXME tainted pointer
+  //FIXME: tainted pointer
   if (ClCombinePointerLabelsOnLoad) {
     Value *PtrShadow = TF.getShadow(LI.getPointerOperand());
     Shadow = TF.combineShadows(Shadow, PtrShadow, &LI);
@@ -1307,7 +1321,7 @@ void TaintVisitor::visitStoreInst(StoreInst &SI) {
 
   Value* Shadow = TF.getShadow(SI.getValueOperand());
 #if 0
-  //FIXME tainted pointer
+  //FIXME: tainted pointer
   if (ClCombinePointerLabelsOnStore) {
     Value *PtrShadow = TF.getShadow(SI.getPointerOperand());
     Shadow = TF.combineShadows(Shadow, PtrShadow, &SI);
@@ -1354,7 +1368,7 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
 
 void TaintVisitor::visitCmpInst(CmpInst &CI) {
   if (CI.getMetadata("nosanitize")) return;
-  // FIXME integer only now
+  // FIXME: integer only now
   if (!isa<ICmpInst>(CI)) return;
 #if 0 //TODO make an option
   TF.visitCmpInst(&CI);
@@ -1394,29 +1408,41 @@ void TaintVisitor::visitSwitchInst(SwitchInst &SWI) {
   TF.visitSwitchInst(&SWI);
 }
 
+void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
+  IRBuilder<> IRB(I);
+  for (auto &idx: I->indices()) {
+    Value *Index = &*idx;
+    Value *Shadow = getShadow(Index);
+    if (Shadow != TT.ZeroShadow) {
+      Index = IRB.CreateZExtOrTrunc(Index, TT.Int64Ty);
+      IRB.CreateCall(TT.TaintTraceGEPFn, {Shadow, Index});
+    }
+  }
+}
+
 void TaintVisitor::visitGetElementPtrInst(GetElementPtrInst &GEPI) {
   if (GEPI.getMetadata("nosanitize")) return;
-  //FIXME
+  TF.visitGEPInst(&GEPI);
 }
 
 void TaintVisitor::visitExtractElementInst(ExtractElementInst &I) {
-  //FIXME
+  //FIXME:
 }
 
 void TaintVisitor::visitInsertElementInst(InsertElementInst &I) {
-  //FIXME
+  //FIXME:
 }
 
 void TaintVisitor::visitShuffleVectorInst(ShuffleVectorInst &I) {
-  //FIXME
+  //FIXME:
 }
 
 void TaintVisitor::visitExtractValueInst(ExtractValueInst &I) {
-  //FIXME
+  //FIXME:
 }
 
 void TaintVisitor::visitInsertValueInst(InsertValueInst &I) {
-  //FIXME
+  //FIXME:
 }
 
 void TaintVisitor::visitAllocaInst(AllocaInst &I) {
@@ -1448,7 +1474,7 @@ void TaintVisitor::visitSelectInst(SelectInst &I) {
   Value *FalseShadow = TF.getShadow(I.getFalseValue());
 
   if (isa<VectorType>(Condition->getType())) {
-    //FIXME
+    //FIXME:
     TF.setShadow(&I, TF.TT.ZeroShadow);
   } else {
     Value *ShadowSel;
@@ -1550,6 +1576,13 @@ void TaintVisitor::visitCallSite(CallSite CS) {
 
   IRBuilder<> IRB(CS.getInstruction());
 
+  // trace indirect call
+  if (CS.getCalledFunction() == nullptr) {
+    Value *Shadow = TF.getShadow(CS.getCalledValue());
+    if (Shadow != TF.TT.ZeroShadow)
+      IRB.CreateCall(TF.TT.TaintTraceIndirectCallFn, {Shadow});
+  }
+
   // update callstack ealier here
   ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
   LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
@@ -1587,7 +1620,7 @@ void TaintVisitor::visitCallSite(CallSite CS) {
       return;
     case Taint::WK_Functional:
       CS.setCalledFunction(F);
-      //FIXME
+      //FIXME:
       // visitOperandShadowInst(*CS.getInstruction());
       return;
     case Taint::WK_Custom:

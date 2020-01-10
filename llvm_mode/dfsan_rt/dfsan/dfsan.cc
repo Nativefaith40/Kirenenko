@@ -82,6 +82,7 @@ struct context_hash {
 };
 static std::unordered_map<trace_context, u16, context_hash> __branches;
 static const u16 MAX_BRANCH_COUNT = 16;
+static const u32 MAX_GEP_INDEX = 1024;
 
 Flags __dfsan::flags_data;
 
@@ -796,6 +797,63 @@ __taint_trace_cond(dfsan_label label, u8 r) {
   
   if (pushed) __z3_solver.pop();
 
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__taint_trace_indcall(dfsan_label label) {
+  if (label == 0)
+    return;
+
+  AOUT("tainted indirect call target: %d\n", label);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__taint_trace_gep(dfsan_label label, u64 r) {
+  if (label == 0)
+    return;
+
+  if ((__dfsan_label_info[label].flags & B_FLIPPED))
+    return;
+
+  AOUT("tainted GEP index: %d = %lld\n", label, r);
+  bool pushed = false;
+  u8 size = __dfsan_label_info[label].size * 8;
+  try {
+    z3::expr index = serialize(label);
+    z3::expr result = __z3_context.bv_val((uint64_t)r, size);
+
+    for (u32 i = 0; i < MAX_GEP_INDEX; ++i) {
+      if ((u64)i == r) continue;
+
+      z3::expr c = __z3_context.bv_val((uint64_t)i, size);
+      __z3_solver.push();
+      pushed = true;
+      __z3_solver.add(index == c);
+      z3::check_result res = __z3_solver.check();
+
+      //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+      if (res == z3::sat) {
+        AOUT("\tindex = %d solved\n", i);
+        generate_input();
+      } else if (res == z3::unsat) {
+        AOUT("\tindex = %d not possible\n", i);
+        //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+        __z3_solver.pop();
+        pushed = false;
+        break;
+      }
+      __z3_solver.pop();
+      pushed = false;
+    }
+    // preserve
+    __z3_solver.add(index == result);
+    // mark as visited
+    __dfsan_label_info[label].flags |= B_FLIPPED;
+  } catch (z3::exception e) {
+    Report("WARNING: index solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
+  }
+
+  if (pushed) __z3_solver.pop();
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void

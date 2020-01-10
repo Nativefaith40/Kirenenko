@@ -58,5 +58,5 @@ seed input. It also lacks a driver yet, so we need to manually run
 the newly generated test case(s).
 
 Currently I've tested with `bitflip`, `call_fn`, `call_fn2`, `call_fn3`,
-`cf1`, `context`, `if_eq`, `infer_type`, `memcmp`, `mini`, `pointer`,
-`shift_and`, `sign`, `strcmp`, `strcmp2`, `switch` and `switch2`.
+`cf1`, `context`, `gep`, `gep2`, `if_eq`, `infer_type`, `memcmp`, `mini`,
+`pointer`, `shift_and`, `sign`, `strcmp`, `strcmp2`, `switch` and `switch2`.
