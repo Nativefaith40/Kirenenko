@@ -738,6 +738,7 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
 
       // optimistic?
       z3::solver solver = z3::solver(__z3_context, "QF_BV");
+      solver.set("timeout", 5000U);
       solver.add(pe != result);
       if (solver.check() == z3::sat) {
         z3::model m = solver.get_model();
@@ -805,6 +806,7 @@ __taint_trace_cond(dfsan_label label, u8 r) {
 
       // optimistic?
       z3::solver solver = z3::solver(__z3_context, "QF_BV");
+      solver.set("timeout", 5000U);
       solver.add(cond != result);
       if (solver.check() == z3::sat) {
         z3::model m = solver.get_model();
@@ -864,6 +866,7 @@ __taint_trace_gep(dfsan_label label, u64 r) {
 
       // optimistic?
       z3::solver solver = z3::solver(__z3_context, "QF_BV");
+      solver.set("timeout", 5000U);
       solver.add(index > result);
       if (solver.check() == z3::sat) {
         z3::model m = solver.get_model();
