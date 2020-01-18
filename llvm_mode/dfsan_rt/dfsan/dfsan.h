@@ -161,6 +161,7 @@ enum predicate {
 
 static inline bool is_commutative(unsigned char op) {
   switch(op) {
+    case Not:
     case And:
     case Or:
     case Xor:

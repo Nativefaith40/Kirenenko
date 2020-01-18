@@ -1135,10 +1135,11 @@ Value *Taint::getShadowAddress(Value *Addr, Instruction *Pos) {
 
 Value *TaintFunction::combineBinaryOperatorShadows(BinaryOperator *BO,
                                                    uint8_t op) {
-  if (BinaryOperator::isNot(BO))
+  if (BinaryOperator::isNot(BO) && BO->getType()->isIntegerTy(1)) {
     op = 1;
-  else if (BinaryOperator::isNeg(BO))
-    op = 2;
+  }
+  // else if (BinaryOperator::isNeg(BO))
+  //   op = 2;
   Value *Shadow1 = getShadow(BO->getOperand(0));
   Value *Shadow2 = getShadow(BO->getOperand(1));
   Value *Shadow = combineShadows(Shadow1, Shadow2, op, BO);

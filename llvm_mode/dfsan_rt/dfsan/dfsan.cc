@@ -590,11 +590,11 @@ static z3::expr serialize(dfsan_label label) {
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return cache_expr(info, base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8));
   } else if (info->op == Not) {
-    if (info->l2 == 0) {
+    if (info->l2 == 0 || info->size) {
       throw z3::exception("invalid Not operation");
     }
-    z3::expr e = serialize(info->l1);
-    info->tree_size = __dfsan_label_info[info->l1].tree_size; // lazy init
+    z3::expr e = serialize(info->l2);
+    info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return cache_expr(info, ~e);
   } else if (info->op == Neg) {
     if (info->l2 == 0) {
@@ -845,6 +845,8 @@ __taint_trace_gep(dfsan_label label, u64 r) {
     return;
 
   AOUT("tainted GEP index: %d = %lld\n", label, r);
+  return;
+
   bool pushed = false;
   u8 size = __dfsan_label_info[label].size * 8;
   try {
