@@ -1644,6 +1644,7 @@ SANITIZER_INTERFACE_ATTRIBUTE size_t
 __dfsw_mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps,
                dfsan_label pwc_label, dfsan_label s_label, dfsan_label
                n_label, dfsan_label ps_label, dfsan_label *ret_label) {
+  *ret_label = 0;
   size_t ret = mbrtowc(pwc, s, n, ps);
   if (ret == (size_t)-1 || ret == (size_t)-2) return ret;
   else if (pwc != 0) {
@@ -1651,7 +1652,6 @@ __dfsw_mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps,
     assert(false);
     dfsan_store_label(multibyte, (void *)pwc, sizeof(wchar_t));
   }
-  *ret_label = 0;
   return ret;
 }
 
