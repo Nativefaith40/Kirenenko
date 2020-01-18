@@ -155,7 +155,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_memcmp(const void *s1, const void *s2,
   CALL_WEAK_INTERCEPTOR_HOOK(dfsan_weak_hook_memcmp, GET_CALLER_PC(), s1, s2, n,
                              s1_label, s2_label, n_label);
   int ret = memcmp(s1, s2, n);
-  AOUT("memcmp: n = %d\n", n);
+  //AOUT("memcmp: n = %d\n", n);
   dfsan_label ls1 = dfsan_read_label(s1, n);
   dfsan_label ls2 = dfsan_read_label(s2, n);
   // ugly hack ...
@@ -175,7 +175,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_strcmp(const char *s1, const char *s2,
                              s1_label, s2_label);
   int ret = strcmp(s1, s2);
   // check which one is tainted
-  AOUT("strcmp: %s <=> %s\n", s1, s2);
+  //AOUT("strcmp: %s <=> %s\n", s1, s2);
   size_t size = strlen(s1) + 1; // including tailing '\0'
   if (dfsan_get_label(s1) != 0)
     size = strlen(s2) + 1; // including tailing '\0'
@@ -226,7 +226,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_strncmp(const char *s1, const char *s2,
                              n, s1_label, s2_label, n_label);
 
   int ret = strncmp(s1, s2, n);
-  AOUT("%s <=> %s\n", s1, s2);
+  //AOUT("%s <=> %s\n", s1, s2);
   if (dfsan_get_label(s1) == 0 && strlen(s1) < (n - 1))
     n = strlen(s1) + 1;
   if (dfsan_get_label(s2) == 0 && strlen(s2) < (n - 1))
@@ -1210,6 +1210,7 @@ int __dfsw_sprintf(char *str, const char *format, dfsan_label str_label,
   va_start(ap, ret_label);
   int ret = format_buffer(str, ~0ul, format, va_labels, ret_label, ap);
   va_end(ap);
+  *ret_label = 0;
   return ret;
 }
 
@@ -1222,6 +1223,7 @@ int __dfsw_snprintf(char *str, size_t size, const char *format,
   va_start(ap, ret_label);
   int ret = format_buffer(str, size, format, va_labels, ret_label, ap);
   va_end(ap);
+  *ret_label = 0;
   return ret;
 }
 
@@ -1649,6 +1651,7 @@ __dfsw_mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps,
     assert(false);
     dfsan_store_label(multibyte, (void *)pwc, sizeof(wchar_t));
   }
+  *ret_label = 0;
   return ret;
 }
 
