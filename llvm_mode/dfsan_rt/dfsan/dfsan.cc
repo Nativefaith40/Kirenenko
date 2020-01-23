@@ -255,7 +255,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       AOUT("same: offset = %d, size = %d, n = %d\n", offset,
           __dfsan_label_info[label0].size, n);
 
-      return __taint_union(offset, label0, Trunc, n, 0, 0);
+      return __taint_union(0, label0, Trunc, n, offset, 0);
     } else {
       // smaller than loaded, extend
       return __taint_union(0, label0, ZExt, n, 0, 0);
@@ -588,7 +588,8 @@ static z3::expr serialize(dfsan_label label) {
   } else if (info->op == Trunc) {
     z3::expr base = serialize(info->l2);
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
-    return cache_expr(info, base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8));
+    // starting offset is usually 0, in case it's not, it'll be in op1
+    return cache_expr(info, base.extract(((u8)info->op1 + info->size) * 8 - 1, (u8)info->l1 * 8));
   } else if (info->op == Not) {
     if (info->l2 == 0 || info->size) {
       throw z3::exception("invalid Not operation");
