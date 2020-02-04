@@ -1000,7 +1000,7 @@ bool Taint::runOnModule(Module &M) {
         Instruction *Next = Inst->getNextNode();
         // TaintVisitor may delete Inst, so keep track of whether it was a
         // terminator.
-        bool IsTerminator = isa<TerminatorInst>(Inst);
+        bool IsTerminator = Inst->isTerminator();
         if (!TF.SkipInsts.count(Inst))
           TaintVisitor(TF).visit(Inst);
         if (IsTerminator)
@@ -1133,9 +1133,18 @@ Value *Taint::getShadowAddress(Value *Addr, Instruction *Pos) {
       ShadowPtrTy);
 }
 
+static inline bool isConstantOne(const Value *V) {
+  if (const ConstantInt *CI = dyn_cast<ConstantInt>(V))
+    return CI->isOne();
+  return false;
+}
+
 Value *TaintFunction::combineBinaryOperatorShadows(BinaryOperator *BO,
                                                    uint8_t op) {
-  if (BinaryOperator::isNot(BO) && BO->getType()->isIntegerTy(1)) {
+  if (BO->getType()->isIntegerTy(1) &&
+      BO->getOpcode() == Instruction::Xor &&
+      (isConstantOne(BO->getOperand(1)) ||
+       isConstantOne(BO->getOperand(0)))) {
     op = 1;
   }
   // else if (BinaryOperator::isNeg(BO))
@@ -1599,22 +1608,23 @@ void TaintVisitor::visitCallSite(CallSite CS) {
       IRB.CreateCall(TF.TT.TaintTraceIndirectCallFn, {Shadow});
   }
 
-  // update callstack ealier here
-  ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
-  LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
-  LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-      MDNode::get(*(TF.TT.Ctx), None));
-  Value *NCS = IRB.CreateXor(LCS, CID);
-  StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
-  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-      MDNode::get(*(TF.TT.Ctx), None));
+  if (CS.getInstruction()->getNextNode()) {
+    // update callstack ealier here
+    ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
+    LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
+    LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+        MDNode::get(*(TF.TT.Ctx), None));
+    Value *NCS = IRB.CreateXor(LCS, CID);
+    StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
+    SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+        MDNode::get(*(TF.TT.Ctx), None));
 
-  // after callsite
-  IRB.SetInsertPoint(CS.getInstruction()->getNextNode());
-  Value *RCS = IRB.CreateXor(NCS, CID);
-  SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
-  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-      MDNode::get(*(TF.TT.Ctx), None));
+    IRB.SetInsertPoint(CS.getInstruction()->getNextNode());
+    Value *RCS = IRB.CreateXor(NCS, CID);
+    SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
+    SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+        MDNode::get(*(TF.TT.Ctx), None));
+  }
 
   // reset IRB
   IRB.SetInsertPoint(CS.getInstruction());
