@@ -173,7 +173,7 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
     Swap(op1, op2);
   }
   if (l1 == 0 && l2 < CONST_OFFSET) return 0;
-  if (l2 == kInitializingLabel) return kInitializingLabel;
+  if (l1 == kInitializingLabel || l2 == kInitializingLabel) return kInitializingLabel;
 
   if (l1 >= CONST_OFFSET) op1 = 0;
   if (l2 >= CONST_OFFSET) op2 = 0;
@@ -328,6 +328,8 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
     // for debugging
     dfsan_label h = atomic_load(&__dfsan_last_label, memory_order_relaxed);
     assert(l <= h);
+  } else {
+    return;
   }
   // check how the source label is created
   switch (__dfsan_label_info[l].op) {
