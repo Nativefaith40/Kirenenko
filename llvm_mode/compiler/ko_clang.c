@@ -73,7 +73,7 @@ static void check_type(char *name) {
   } else {
     clang_type = CLANG_DFSAN_TYPE;
   }
-  if (!strcmp(name, "tsym-clang++")) {
+  if (!strcmp(name, "ko-clang++")) {
     is_cxx = 1;
   }
 }
@@ -117,6 +117,7 @@ static void add_runtime() {
   cc_params[cc_par_cnt++] = "-lpthread";
   cc_params[cc_par_cnt++] = "-lm";
   cc_params[cc_par_cnt++] = "-lz3";
+  cc_params[cc_par_cnt++] = "-lz";
 }
 
 static void add_dfsan_pass() {
@@ -127,6 +128,9 @@ static void add_dfsan_pass() {
   cc_params[cc_par_cnt++] = "-mllvm";
   cc_params[cc_par_cnt++] =
       alloc_printf("-taint-abilist=%s/rules/dfsan_abilist.txt", obj_path);
+  cc_params[cc_par_cnt++] = "-mllvm";
+  cc_params[cc_par_cnt++] =
+      alloc_printf("-taint-abilist=%s/rules/zlib_abilist.txt", obj_path);
 }
 
 static void edit_params(u32 argc, char **argv) {
@@ -145,10 +149,10 @@ static void edit_params(u32 argc, char **argv) {
   check_type(name);
 
   if (is_cxx) {
-    u8 *alt_cxx = getenv("TSYM_CXX");
+    u8 *alt_cxx = getenv("KO_CXX");
     cc_params[0] = alt_cxx ? alt_cxx : (u8 *)"clang++";
   } else {
-    u8 *alt_cc = getenv("TSYM_CC");
+    u8 *alt_cc = getenv("KO_CC");
     cc_params[0] = alt_cc ? alt_cc : (u8 *)"clang";
   }
 
@@ -162,7 +166,7 @@ static void edit_params(u32 argc, char **argv) {
     u8 *cur = *(++argv);
     // FIXME
     if (!strcmp(cur, "-O1") || !strcmp(cur, "-O2") || !strcmp(cur, "-O3")) {
-      continue;
+      //continue;
     }
     if (!strcmp(cur, "-m32"))
       bit_mode = 32;
@@ -241,7 +245,7 @@ static void edit_params(u32 argc, char **argv) {
     }
   }
 
-  if (!getenv("TSYM_DONT_OPTIMIZE")) {
+  if (!getenv("KO_DONT_OPTIMIZE")) {
     cc_params[cc_par_cnt++] = "-g";
     cc_params[cc_par_cnt++] = "-O3";
     //cc_params[cc_par_cnt++] = "-funroll-loops";
@@ -253,8 +257,8 @@ static void edit_params(u32 argc, char **argv) {
     cc_params[cc_par_cnt++] = alloc_printf("-L%s/lib/libcxx_track/", obj_path);
     cc_params[cc_par_cnt++] = "-stdlib=libc++";
     cc_params[cc_par_cnt++] = "-Wl,--start-group";
-    cc_params[cc_par_cnt++] = "-lc++abitrack";
     cc_params[cc_par_cnt++] = "-lc++abi";
+    cc_params[cc_par_cnt++] = "-lc++";
     cc_params[cc_par_cnt++] = "-Wl,--end-group";
   }
 
