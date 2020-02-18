@@ -1608,23 +1608,24 @@ void TaintVisitor::visitCallSite(CallSite CS) {
       IRB.CreateCall(TF.TT.TaintTraceIndirectCallFn, {Shadow});
   }
 
-  if (CS.getInstruction()->getNextNode()) {
-    // update callstack ealier here
-    ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
-    LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
-    LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-        MDNode::get(*(TF.TT.Ctx), None));
-    Value *NCS = IRB.CreateXor(LCS, CID);
-    StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
-    SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-        MDNode::get(*(TF.TT.Ctx), None));
+  // update callstack ealier here
+  ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
+  LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
+  LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+  Value *NCS = IRB.CreateXor(LCS, CID);
+  StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
+  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
 
+  if (CS.getInstruction()->getNextNode()) {
     IRB.SetInsertPoint(CS.getInstruction()->getNextNode());
-    Value *RCS = IRB.CreateXor(NCS, CID);
-    SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
-    SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-        MDNode::get(*(TF.TT.Ctx), None));
+  } else {
+    IRB.SetInsertPoint(CS.getInstruction()->getParent());
   }
+  SCS = IRB.CreateStore(LCS, TF.TT.CallStack);
+  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
 
   // reset IRB
   IRB.SetInsertPoint(CS.getInstruction());
