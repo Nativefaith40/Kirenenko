@@ -631,6 +631,8 @@ static z3::expr serialize(dfsan_label label) {
   z3::expr op1 = __z3_context.bv_val((uint64_t)info->op1, size);
   if (info->l1 >= CONST_OFFSET) {
     op1 = serialize(info->l1).simplify();
+  } else if (!info->size) {
+    op1 = __z3_context.bool_val(info->op1 == 1);
   }
   if (info->op == Concat && info->l2 == 0) {
     assert(info->l1 >= CONST_OFFSET);
@@ -639,6 +641,8 @@ static z3::expr serialize(dfsan_label label) {
   z3::expr op2 = __z3_context.bv_val((uint64_t)info->op2, size);
   if (info->l2 >= CONST_OFFSET) {
     op2 = serialize(info->l2).simplify();
+  } else if (!info->size) {
+    op2 = __z3_context.bool_val(info->op2 == 1);
   }
   // update tree_size
   info->tree_size = __dfsan_label_info[info->l1].tree_size +
