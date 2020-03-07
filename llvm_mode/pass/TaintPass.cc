@@ -134,6 +134,16 @@ static cl::opt<bool> ClDebugNonzeroLabels(
              "load or return with a nonzero label"),
     cl::Hidden);
 
+static cl::opt<bool> ClTraceGEPOffset(
+    "taint-trace-gep",
+    cl::desc("Trace GEP offset for solving."),
+    cl::Hidden, cl::init(false));
+
+static cl::opt<bool> ClTraceFP(
+    "taint-trace-float-pointer",
+    cl::desc("Propagate taint for floating pointer instructions."),
+    cl::Hidden, cl::init(false));
+
 static StringRef GetGlobalTypeString(const GlobalValue &G) {
   // Types of GlobalVariables are always pointer types.
   Type *GType = G.getValueType();
@@ -1170,15 +1180,30 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
                                      uint16_t op,
                                      Instruction *Pos) {
   if (V1 == TT.ZeroShadow && V2 == TT.ZeroShadow) return V1;
-  Type *Ty = Pos->getType();
-  if (!(Ty->isIntegerTy() || Ty->isPointerTy())) {
+
+  // filter types
+  Type *Ty = Pos->getOperand(0)->getType();
+  if (Ty->isFloatingPointTy()) {
+    // check for FP
+    if (!ClTraceFP)
+      return TT.ZeroShadow;
+  } else if (Ty->isVectorTy()) {
+    // FIXME: vector type
+    return TT.ZeroShadow;
+  } else if (!Ty->isIntegerTy() && !Ty->isPointerTy()) {
+    // not FP and not vector and not int and not ptr?
+    errs() << "Unknown type: " << *Pos << "\n";
     return TT.ZeroShadow;
   }
+
+  // filter size
   auto &DL = Pos->getModule()->getDataLayout();
-  IRBuilder<> IRB(Pos);
   uint64_t size = DL.getTypeSizeInBits(Pos->getType());
-  if (op == Instruction::ICmp) {
-    CmpInst *CI = cast<CmpInst>(Pos);
+  // FIXME: do not handle type larger than 64-bit
+  if (size > 64) return TT.ZeroShadow;
+
+  IRBuilder<> IRB(Pos);
+  if (CmpInst *CI = dyn_cast<CmpInst>(Pos)) { // for both icmp and fcmp
     size = DL.getTypeSizeInBits(CI->getOperand(0)->getType());
     // op should be predicate
     op |= (CI->getPredicate() << 8);
@@ -1187,17 +1212,31 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
   Value *Op = ConstantInt::get(TT.Int16Ty, op);
   Value *Size = ConstantInt::get(TT.Int8Ty, size);
   Value *Op1 = Pos->getOperand(0);
-  if (Op1->getType()->isPointerTy())
+  Ty = Op1->getType();
+  // bitcast to integer before extending
+  if (Ty->isHalfTy())
+    Op1 = IRB.CreateBitCast(Op1, TT.Int16Ty);
+  else if (Ty->isFloatTy())
+    Op1 = IRB.CreateBitCast(Op1, TT.Int32Ty);
+  else if (Ty->isDoubleTy())
+    Op1 = IRB.CreateBitCast(Op1, TT.Int64Ty);
+  else if (Ty->isPointerTy())
     Op1 = IRB.CreatePtrToInt(Op1, TT.Int64Ty);
-  else
-    Op1 = IRB.CreateZExtOrTrunc(Op1, TT.Int64Ty);
+  Op1 = IRB.CreateZExtOrTrunc(Op1, TT.Int64Ty);
   Value *Op2 = ConstantInt::get(TT.Int64Ty, 0);
   if (Pos->getNumOperands() > 1) {
     Op2 = Pos->getOperand(1);
-    if (Op2->getType()->isPointerTy())
+    Ty = Op2->getType();
+    // bitcast to integer before extending
+    if (Ty->isHalfTy())
+      Op2 = IRB.CreateBitCast(Op2, TT.Int16Ty);
+    else if (Ty->isFloatTy())
+      Op2 = IRB.CreateBitCast(Op2, TT.Int32Ty);
+    else if (Ty->isDoubleTy())
+      Op2 = IRB.CreateBitCast(Op2, TT.Int64Ty);
+    else if (Ty->isPointerTy())
       Op2 = IRB.CreatePtrToInt(Op2, TT.Int64Ty);
-    else
-      Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
+    Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
   }
   CallInst *Call = IRB.CreateCall(TT.TaintUnionFn, {V1, V2, Op, Size, Op1, Op2});
   Call->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
@@ -1208,14 +1247,10 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
 
 Value *TaintFunction::combineCastInstShadows(CastInst *CI,
                                              uint8_t op) {
-  if (op == Instruction::SExt || op == Instruction::ZExt ||
-      op == Instruction::Trunc) {
-    Value *Shadow1 = TT.ZeroShadow;
-    Value *Shadow2 = getShadow(CI->getOperand(0));
-    Value *Shadow = combineShadows(Shadow1, Shadow2, op, CI);
-    return Shadow;
-  } else
-    return getShadow(CI->getOperand(0));
+  Value *Shadow1 = TT.ZeroShadow;
+  Value *Shadow2 = getShadow(CI->getOperand(0));
+  Value *Shadow = combineShadows(Shadow1, Shadow2, op, CI);
+  return Shadow;
 }
 
 Value *TaintFunction::combineCmpInstShadows(CmpInst *CI,
@@ -1390,7 +1425,7 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
 void TaintVisitor::visitCmpInst(CmpInst &CI) {
   if (CI.getMetadata("nosanitize")) return;
   // FIXME: integer only now
-  if (!isa<ICmpInst>(CI)) return;
+  if (!ClTraceFP && !isa<ICmpInst>(CI)) return;
 #if 0 //TODO make an option
   TF.visitCmpInst(&CI);
 #endif
@@ -1404,8 +1439,6 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   auto &DL = M->getDataLayout();
   // get operand
   Value *Cond = I->getCondition();
-  if (!Cond->getType()->isIntegerTy())
-    return;
   Value *CondShadow = getShadow(Cond);
   if (CondShadow == TT.ZeroShadow)
     return;
@@ -1457,6 +1490,7 @@ void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
 }
 
 void TaintVisitor::visitGetElementPtrInst(GetElementPtrInst &GEPI) {
+  if (!ClTraceGEPOffset) return;
   if (GEPI.getMetadata("nosanitize")) return;
   TF.visitGEPInst(&GEPI);
 }

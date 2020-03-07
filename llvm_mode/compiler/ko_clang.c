@@ -16,7 +16,7 @@
 
  */
 
-#define TSYM_MAIN
+#define KO_MAIN
 
 #include "alloc_inl.h"
 #include "defs.h"
@@ -131,6 +131,15 @@ static void add_dfsan_pass() {
   cc_params[cc_par_cnt++] = "-mllvm";
   cc_params[cc_par_cnt++] =
       alloc_printf("-taint-abilist=%s/rules/zlib_abilist.txt", obj_path);
+  if (getenv("KO_TRACE_FP")) {
+    cc_params[cc_par_cnt++] = "-mllvm";
+    cc_params[cc_par_cnt++] = "-taint-trace-float-pointer";
+  }
+  if (is_cxx) {
+    cc_params[cc_par_cnt++] = "-mllvm";
+    cc_params[cc_par_cnt++] =
+        alloc_printf("-taint-abilist=%s/rules/abilibstdc++.txt", obj_path);
+  }
 }
 
 static void edit_params(u32 argc, char **argv) {
@@ -210,9 +219,14 @@ static void edit_params(u32 argc, char **argv) {
   cc_params[cc_par_cnt++] = "-mno-sse4.1";
   cc_params[cc_par_cnt++] = "-mno-sse4.2";
   cc_params[cc_par_cnt++] = "-mno-ssse3";
+  cc_params[cc_par_cnt++] = "-mno-avx2";
+  cc_params[cc_par_cnt++] = "-mno-avx512f";
+  cc_params[cc_par_cnt++] = "-mno-avx512bw";
+  cc_params[cc_par_cnt++] = "-mno-avx512dq";
+  cc_params[cc_par_cnt++] = "-mno-avx512vl";
 #endif
 
-  if (getenv("TSYM_HARDEN")) {
+  if (getenv("KO_HARDEN")) {
     cc_params[cc_par_cnt++] = "-fstack-protector-all";
 
     if (!fortify_set)
@@ -221,24 +235,24 @@ static void edit_params(u32 argc, char **argv) {
 
   if (!asan_set && clang_type == CLANG_FAST_TYPE) {
     // We did not test Angora on asan and msan..
-    if (getenv("TSYM_USE_ASAN")) {
+    if (getenv("KO_USE_ASAN")) {
 
-      if (getenv("TSYM_USE_MSAN"))
+      if (getenv("KO_USE_MSAN"))
         FATAL("ASAN and MSAN are mutually exclusive");
 
-      if (getenv("TSYM_HARDEN"))
-        FATAL("ASAN and TSYM_HARDEN are mutually exclusive");
+      if (getenv("KO_HARDEN"))
+        FATAL("ASAN and KO_HARDEN are mutually exclusive");
 
       cc_params[cc_par_cnt++] = "-U_FORTIFY_SOURCE";
       cc_params[cc_par_cnt++] = "-fsanitize=address";
 
-    } else if (getenv("TSYM_USE_MSAN")) {
+    } else if (getenv("KO_USE_MSAN")) {
 
-      if (getenv("TSYM_USE_ASAN"))
+      if (getenv("KO_USE_ASAN"))
         FATAL("ASAN and MSAN are mutually exclusive");
 
-      if (getenv("TSYM_HARDEN"))
-        FATAL("MSAN and TSYM_HARDEN are mutually exclusive");
+      if (getenv("KO_HARDEN"))
+        FATAL("MSAN and KO_HARDEN are mutually exclusive");
 
       cc_params[cc_par_cnt++] = "-U_FORTIFY_SOURCE";
       cc_params[cc_par_cnt++] = "-fsanitize=memory";
@@ -296,19 +310,19 @@ int main(int argc, char **argv) {
   if (argc < 2) {
 
     SAYF("\n"
-         "This is a helper application for tsym. It serves as a drop-in "
+         "This is a helper application for Kirenenko. It serves as a drop-in "
          "replacement\n"
          "for clang, letting you recompile third-party code with the required "
          "runtime\n"
          "instrumentation. A common use pattern would be one of the "
          "following:\n\n"
 
-         "  CC=%s/tsym-clang ./configure\n"
-         "  CXX=%s/tsym-clang++ ./configure\n\n"
+         "  CC=%s/ko-clang ./configure\n"
+         "  CXX=%s/ko-clang++ ./configure\n\n"
 
-         "You can specify custom next-stage toolchain via TSYM_CC and TSYM_CXX."
+         "You can specify custom next-stage toolchain via KO_CC and KO_CXX."
          "Setting\n"
-         "TSYM_HARDEN enables hardening optimizations in the compiled "
+         "KO_HARDEN enables hardening optimizations in the compiled "
          "code.\n\n",
          "xx", "xx");
 
