@@ -710,26 +710,15 @@ Taint::buildWrapperFunction(Function *F, StringRef NewFName,
                      BB);
     new UnreachableInst(*Ctx, BB);
   } else {
-    // update callstack here
-    IRBuilder<> IRB(BB);
-    ConstantInt *CID = ConstantInt::get(Int32Ty, (uint32_t)random());
-    LoadInst *LCS = IRB.CreateLoad(CallStack);
-    Value *NCS = IRB.CreateXor(LCS, CID);
-    StoreInst *SCS = IRB.CreateStore(NCS, CallStack);
-
     std::vector<Value *> Args;
     unsigned n = FT->getNumParams();
     for (Function::arg_iterator ai = NewF->arg_begin(); n != 0; ++ai, --n)
       Args.push_back(&*ai);
-    CallInst *CI = IRB.CreateCall(F, Args, "");
-
-    // reset
-    SCS = IRB.CreateStore(LCS, CallStack);
-
+    CallInst *CI = CallInst::Create(F, Args, "", BB);
     if (FT->getReturnType()->isVoidTy())
-      IRB.CreateRetVoid();
+      ReturnInst::Create(*Ctx, BB);
     else
-      IRB.CreateRet(CI);
+      ReturnInst::Create(*Ctx, CI, BB);
   }
 
   return NewF;
@@ -1652,6 +1641,28 @@ void TaintVisitor::visitCallSite(CallSite CS) {
     if (Shadow != TF.TT.ZeroShadow)
       IRB.CreateCall(TF.TT.TaintTraceIndirectCallFn, {Shadow});
   }
+
+  // update callstack ealier here
+  ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
+  LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
+  LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+  Value *NCS = IRB.CreateXor(LCS, CID);
+  StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
+  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+
+  if (CS.getInstruction()->getNextNode()) {
+    IRB.SetInsertPoint(CS.getInstruction()->getNextNode());
+  } else {
+    IRB.SetInsertPoint(CS.getInstruction()->getParent());
+  }
+  SCS = IRB.CreateStore(LCS, TF.TT.CallStack);
+  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
+      MDNode::get(*(TF.TT.Ctx), None));
+
+  // reset IRB
+  IRB.SetInsertPoint(CS.getInstruction());
 
   DenseMap<Value *, Function *>::iterator i =
       TF.TT.UnwrappedFnMap.find(CS.getCalledValue());
