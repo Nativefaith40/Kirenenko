@@ -597,7 +597,10 @@ static z3::expr serialize(dfsan_label label) {
     }
     z3::expr e = serialize(info->l2);
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
-    return cache_expr(info, ~e);
+    if (!e.is_bool()) {
+      throw z3::exception("Only LNot should be recorded");
+    }
+    return cache_expr(info, !e);
   } else if (info->op == Neg) {
     if (info->l2 == 0) {
       throw z3::exception("invalid Neg predicate");
