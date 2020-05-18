@@ -55,6 +55,7 @@ struct dfsan_label_info {
 # define PATH_MAX 4096
 #endif
 #define CONST_OFFSET 1
+#define CONST_LABEL 0
 
 struct taint_file {
   char filename[PATH_MAX];
@@ -136,14 +137,15 @@ enum operators {
 #undef HANDLE_OTHER_INST
 #undef LAST_OTHER_INST
   // self-defined
-  Not = 1,
-  Neg = 2,
-  Load = 3,
-  Extract = 4,
-  Concat = 5,
+  Not       = last_llvm_op + 1,
+  Neg       = last_llvm_op + 2,
+  Load      = last_llvm_op + 3,
+  Extract   = last_llvm_op + 4,
+  Concat    = last_llvm_op + 5,
   // higher-order
-  fmemcmp = last_llvm_op + 1,
-  fcrc32  = last_llvm_op + 2
+  fmemcmp   = last_llvm_op + 6,
+  fsize     = last_llvm_op + 7,
+  fcrc32    = last_llvm_op + 8
 };
 
 enum predicate {

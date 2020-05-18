@@ -81,7 +81,7 @@ struct context_hash {
   }
 };
 static std::unordered_map<trace_context, u16, context_hash> __branches;
-static const u16 MAX_BRANCH_COUNT = 16;
+static const u16 MAX_BRANCH_COUNT = 1;
 static const u64 MAX_GEP_INDEX = 0x10000;
 
 Flags __dfsan::flags_data;
@@ -164,6 +164,20 @@ static inline u32 xxhash(u32 h1, u32 h2, u32 h3) {
   return h32;
 }
 
+static inline dfsan_label_info* get_label_info(dfsan_label label) {
+  return &__dfsan_label_info[label];
+}
+
+static inline bool is_constant_label(dfsan_label label) {
+  return label == CONST_LABEL;
+}
+
+static inline bool is_kind_of_label(dfsan_label label, u16 kind) {
+  return get_label_info(label)->op == kind;
+}
+
+static bool isZeroOrPowerOfTwo(uint16_t x) { return (x & (x - 1)) == 0; }
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
                           u64 op1, u64 op2) {
@@ -219,48 +233,21 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
   // for debugging
   // dfsan_label l = atomic_load(&__dfsan_last_label, memory_order_relaxed);
   // assert(label0 <= l);
-  if (label0 >= CONST_OFFSET) assert(__dfsan_label_info[label0].size != 0);
+  if (label0 >= CONST_OFFSET) assert(get_label_info(label0)->size != 0);
 
-  // constant
-  if (label0 == 0) {
+  // fast path 1: constant
+  if (is_constant_label(label0)) {
     bool constant = true;
     for (uptr i = 1; i < n; i++) {
-      if (ls[i] != 0) {
+      if (!is_constant_label(ls[i])) {
         constant = false;
         break;
       }
     }
-    if (constant) return 0;
+    if (constant) return CONST_LABEL;
   }
   AOUT("label0 = %d, n = %d, ls = %p\n", label0, n, ls);
-  // same
-  bool same = true;
-  for (uptr i = 1; i != n; ++i) {
-    if (ls[i] != label0 && ls[i] != 0) {
-      same = false;
-      break;
-    }
-  }
-  if (same) {
-    // hope the length of store is equal to the length of load
-    if (__dfsan_label_info[label0].size == n)
-      return label0;
-    if (__dfsan_label_info[label0].size > n) {
-      // larger than loaded, extract
-      uptr offset = 0;
-      for (const dfsan_label *li = ls - 1; *li == label0; --li) {
-        offset += 1;
-      }
 
-      AOUT("same: offset = %d, size = %d, n = %d\n", offset,
-          __dfsan_label_info[label0].size, n);
-
-      return __taint_union(offset, label0, Trunc, n, 0, 0);
-    } else {
-      // smaller than loaded, extend
-      return __taint_union(0, label0, ZExt, n, 0, 0);
-    }
-  }
   // shape
   bool shape = true;
   uptr shape_ext = 0;
@@ -268,12 +255,12 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
     // not raw input bytes
     shape = false;
   } else {
-    off_t offset = __dfsan_label_info[label0].op1;
+    off_t offset = get_label_info(label0)->op1;
     for (uptr i = 1; i != n; ++i) {
       dfsan_label next_label = ls[i];
       if (next_label == kInitializingLabel) return kInitializingLabel;
-      else if (next_label == 0) ++shape_ext;
-      else if (__dfsan_label_info[next_label].op1 != offset + i) {
+      else if (next_label == CONST_LABEL) ++shape_ext;
+      else if (get_label_info(next_label)->op1 != offset + i) {
         shape = false;
         break;
       }
@@ -294,31 +281,53 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       ret = __taint_union(0, ret, ZExt, n, 0, 0);
     }
     return ret;
-  } else {
-    Report("WARNING: union load at %p\n", __builtin_return_address(0));
-    dfsan_label label = label0;
-    for (uptr i = __dfsan_label_info[label0].size; i < n;) {
-      dfsan_label next_label = ls[i];
-      AOUT("%u\n", next_label);
-      if (next_label != 0) {
-        if (__dfsan_label_info[next_label].size <= n - i) {
-          i += __dfsan_label_info[next_label].size;
-          label = __taint_union(label, next_label, Concat, i, 0, 0);
-        } else {
-          Report("WARNING: partial loading %d %d\n", n-i, __dfsan_label_info[next_label].size);
-          uptr size = n - i;
-          dfsan_label trunc = __taint_union(0, next_label, Trunc, size, 0, 0);
-          return __taint_union(label, trunc, Concat, n, 0, 0);
-        }
-      } else {
-        ++i;
-        char *c = (char *)app_for(&ls[i]);
-        label = __taint_union(label, 0, Concat, i, 0, *c);
-      }
-    }
-    AOUT("\n");
-    return label;
   }
+
+  // fast path 2: all labels are extracted from a n-size label, then return that label
+  if (is_kind_of_label(label0, Extract)) {
+    dfsan_label parent = get_label_info(label0)->l1;
+    uptr offset = 0;
+    for (uptr i = 0; i < n; i++) {
+      dfsan_label_info *info = get_label_info(ls[i]);
+      if (!is_kind_of_label(ls[i], Extract)
+            || offset != info->op1
+            || parent != info->l1) {
+        break;
+      }
+      offset += info->size;
+    }
+    if (get_label_info(parent)->size == offset) {
+      AOUT("Fast path (2): all labels are extracts: %u\n", parent);
+      return parent;
+    }
+  }
+
+  // slowpath
+  AOUT("union load slowpath at %p\n", __builtin_return_address(0));
+  dfsan_label label = label0;
+  for (uptr i = get_label_info(label0)->size; i < n;) {
+    dfsan_label next_label = ls[i];
+    u8 next_size = get_label_info(next_label)->size;
+    AOUT("next label=%u, size=%u\n", next_label, next_size);
+    if (!is_constant_label(next_label)) {
+      if (next_size <= n - i) {
+        i += next_size;
+        label = __taint_union(label, next_label, Concat, i, 0, 0);
+      } else {
+        Report("WARNING: partial loading expected=%d has=%d\n", n-i, next_size);
+        uptr size = n - i;
+        dfsan_label trunc = __taint_union(0, next_label, Trunc, size, 0, 0);
+        return __taint_union(label, trunc, Concat, n, 0, 0);
+      }
+    } else {
+      Report("WARNING: taint mixed with concrete %d\n", i);
+      ++i;
+      char *c = (char *)app_for(&ls[i]);
+      label = __taint_union(label, 0, Concat, i, 0, *c);
+    }
+  }
+  AOUT("\n");
+  return label;
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
@@ -329,33 +338,65 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
     dfsan_label h = atomic_load(&__dfsan_last_label, memory_order_relaxed);
     assert(l <= h);
   } else {
+    for (uptr i = 0; i < n; ++i)
+      ls[i] = l;
     return;
   }
-  // check how the source label is created
-  switch (__dfsan_label_info[l].op) {
-    case Load: {
-      // if source label is union load, just break it up
-      dfsan_label label0 = __dfsan_label_info[l].l1;
-      uptr s = n < __dfsan_label_info[l].size ? n : __dfsan_label_info[l].size;
-      for (uptr i = 0; i < s; ++i)
-        ls[i] = label0 + i;
-      break;
+
+  // fast path 1: constant
+  if (l == 0) {
+    for (uptr i = 0; i < n; ++i)
+      ls[i] = l;
+    return;
+  }
+
+  dfsan_label_info *info = get_label_info(l);
+  // fast path 2: single byte
+  if (n == 1 && info->size == 1) {
+    ls[0] = l;
+    return;
+  }
+
+  // fast path 3: load
+  if (is_kind_of_label(l, Load)) {
+    // if source label is union load, just break it up
+    dfsan_label label0 = info->l1;
+    if (n > info->size) {
+      Report("WARNING: store size=%u larger than load size=%d\n", n, info->size);
     }
-    case ZExt: {
-      dfsan_label orig = __dfsan_label_info[l].l2;
-      // size of ICmp result is different so just fall through to default
-      if ((__dfsan_label_info[orig].op & 0xff) != ICmp) {
-        for (uptr i = __dfsan_label_info[orig].size; i < n; ++i)
-          ls[i] = 0;
-        __taint_union_store(orig, ls, __dfsan_label_info[orig].size);
-        break;
-      }
+    for (uptr i = 0; i < n; ++i)
+      ls[i] = label0 + i;
+    return;
+  }
+
+  // fast path 4: Concat
+  if (is_kind_of_label(l, Concat)) {
+    if (n == info->size) {
+      dfsan_label cur = info->l2; // next label
+      dfsan_label_info* cur_info = get_label_info(cur);
+      // store current
+      __taint_union_store(info->l2, &ls[n - cur_info->size], cur_info->size);
+      // store base
+      __taint_union_store(info->l1, ls, n - cur_info->size);
+      return;
     }
-    default: {
-      for (uptr i = 0; i < n; ++i)
-        ls[i] = l;
-      break;
+  }
+
+  // simplify
+  if (is_kind_of_label(l, ZExt)) {
+    dfsan_label orig = info->l2;
+    // size of ICmp result is different so just fall through to default
+    if ((get_label_info(orig)->op & 0xff) != ICmp) {
+      for (uptr i = get_label_info(orig)->size; i < n; ++i)
+        ls[i] = 0;
+      __taint_union_store(orig, ls, get_label_info(orig)->size);
+      return;
     }
+  }
+
+  // default fall through
+  for (uptr i = 0; i < n; ++i) {
+    ls[i] = __taint_union(l, CONST_LABEL, Extract, 1, 0, i);
   }
 }
 
@@ -549,8 +590,8 @@ static z3::expr serialize(dfsan_label label) {
   }
 
   dfsan_label_info *info = &__dfsan_label_info[label];
-  AOUT("%u %u %u %u %u %llu %llu\n", label, info->l1, info->l2,
-       info->op, info->size, info->op1, info->op2);
+  AOUT("%u = (l1:%u, l2:%u, op:%u, size:%u, op1:%llu, op2:%llu\n",
+       label, info->l1, info->l2, info->op, info->size, info->op1, info->op2);
 
   if (info->expr) {
     return *reinterpret_cast<z3::expr*>(info->expr);
@@ -591,6 +632,10 @@ static z3::expr serialize(dfsan_label label) {
     z3::expr base = serialize(info->l2);
     info->tree_size = __dfsan_label_info[info->l2].tree_size; // lazy init
     return cache_expr(info, base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8));
+  } else if (info->op == Extract) {
+    z3::expr base = serialize(info->l1);
+    info->tree_size = get_label_info(info->l1)->tree_size; // lazy init
+    return base.extract((info->op2 + info->size) * 8 - 1, info->op2 * 8);
   } else if (info->op == Not) {
     if (info->l2 == 0 || info->size) {
       throw z3::exception("invalid Not operation");
@@ -669,7 +714,7 @@ static z3::expr serialize(dfsan_label label) {
     // relational
     case ICmp:    return cache_expr(info, get_cmd(op1, op2, info->op >> 8));
     // concat
-    case Concat:  return cache_expr(info, z3::concat(op2, op1));
+    case Concat:  return cache_expr(info, z3::concat(op2, op1)); // little endian
     default:
       Printf("FATAL: unsupported op: %u\n", info->op);
       throw z3::exception("unsupported operator");
@@ -1099,6 +1144,8 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   InitializePlatformEarly();
   MmapFixedNoReserve(ShadowAddr(), UnusedAddr() - ShadowAddr());
   __dfsan_label_info = (dfsan_label_info *)UnionTableAddr();
+  // init const size
+  __dfsan_label_info[CONST_LABEL].size = 1;
 
   InitializeInterceptors();
 
