@@ -278,7 +278,10 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       ret = __taint_union(label0, (dfsan_label)load_size, Load, load_size, 0, 0);
     }
     if (shape_ext) {
-      ret = __taint_union(0, ret, ZExt, n, 0, 0);
+      for (uptr i = 0; i < shape_ext; ++i) {
+        char *c = (char *)app_for(&ls[load_size + i]);
+        ret = __taint_union(ret, 0, Concat, load_size + i + 1, 0, *c);
+      }
     }
     return ret;
   }
@@ -321,8 +324,8 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       }
     } else {
       Report("WARNING: taint mixed with concrete %d\n", i);
-      ++i;
       char *c = (char *)app_for(&ls[i]);
+      ++i;
       label = __taint_union(label, 0, Concat, i, 0, *c);
     }
   }
