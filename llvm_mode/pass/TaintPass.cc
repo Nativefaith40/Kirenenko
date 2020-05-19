@@ -368,6 +368,8 @@ class Taint : public ModulePass {
                                  FunctionType *NewFT);
   Constant *getOrBuildTrampolineFunction(FunctionType *FT, StringRef FName);
 
+  void addContextRecording(Function &F);
+
 public:
   static char ID;
 
@@ -558,6 +560,33 @@ TransformedFunction Taint::getCustomFunctionType(FunctionType *T) {
   return TransformedFunction(
       T, FunctionType::get(T->getReturnType(), ArgTypes, T->isVarArg()),
       ArgumentIndexMapping);
+}
+
+void Taint::addContextRecording(Function &F) {
+  // Most code from Angora
+  BasicBlock *BB = &F.getEntryBlock();
+  assert(pred_begin(BB) == pred_end(BB) &&
+         "Assume that entry block has no predecessors");
+
+  // Add ctx ^ random_index at the beginning of a function
+  IRBuilder<> IRB(&*(BB->getFirstInsertionPt()));
+  ConstantInt *CID = ConstantInt::get(Int32Ty, (uint32_t)random());
+  LoadInst *LCS = IRB.CreateLoad(CallStack);
+  LCS->setMetadata(Mod->getMDKindID("nosanitize"), MDNode::get(*Ctx, None));
+  Value *NCS = IRB.CreateXor(LCS, CID);
+  StoreInst *SCS = IRB.CreateStore(NCS, CallStack);
+  SCS->setMetadata(Mod->getMDKindID("nosanitize"), MDNode::get(*Ctx, None));
+
+  // Recover ctx at the end of a function
+  for (auto FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+    BasicBlock *BB = &*FI;
+    Instruction *Inst = BB->getTerminator();
+    if (isa<ReturnInst>(Inst) || isa<ResumeInst>(Inst)) {
+      IRB.SetInsertPoint(Inst);
+      SCS = IRB.CreateStore(LCS, CallStack);
+      SCS->setMetadata(Mod->getMDKindID("nosanitize"), MDNode::get(*Ctx, None));
+    }
+  }
 }
 
 bool Taint::doInitialization(Module &M) {
@@ -993,6 +1022,7 @@ bool Taint::runOnModule(Module &M) {
     if (!i || i->isDeclaration())
       continue;
 
+    addContextRecording(*i);
     removeUnreachableBlocks(*i);
 
     TaintFunction TF(*this, i, FnsWithNativeABI.count(i));
@@ -1641,25 +1671,6 @@ void TaintVisitor::visitCallSite(CallSite CS) {
     if (Shadow != TF.TT.ZeroShadow)
       IRB.CreateCall(TF.TT.TaintTraceIndirectCallFn, {Shadow});
   }
-
-  // update callstack ealier here
-  ConstantInt *CID = ConstantInt::get(TF.TT.Int32Ty, (uint32_t)random());
-  LoadInst *LCS = IRB.CreateLoad(TF.TT.CallStack);
-  LCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-      MDNode::get(*(TF.TT.Ctx), None));
-  Value *NCS = IRB.CreateXor(LCS, CID);
-  StoreInst *SCS = IRB.CreateStore(NCS, TF.TT.CallStack);
-  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-      MDNode::get(*(TF.TT.Ctx), None));
-
-  if (CS.getInstruction()->getNextNode()) {
-    IRB.SetInsertPoint(CS.getInstruction()->getNextNode());
-  } else {
-    IRB.SetInsertPoint(CS.getInstruction()->getParent());
-  }
-  SCS = IRB.CreateStore(LCS, TF.TT.CallStack);
-  SCS->setMetadata(TF.TT.Mod->getMDKindID("nosanitize"),
-      MDNode::get(*(TF.TT.Ctx), None));
 
   // reset IRB
   IRB.SetInsertPoint(CS.getInstruction());
