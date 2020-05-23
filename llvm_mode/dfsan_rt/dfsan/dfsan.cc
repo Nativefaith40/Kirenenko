@@ -81,7 +81,7 @@ struct context_hash {
   }
 };
 static std::unordered_map<trace_context, u16, context_hash> __branches;
-static const u16 MAX_BRANCH_COUNT = 1;
+static const u16 MAX_BRANCH_COUNT = 16;
 static const u64 MAX_GEP_INDEX = 0x10000;
 
 Flags __dfsan::flags_data;
@@ -782,85 +782,16 @@ static void generate_input(z3::model &m) {
   CloseFile(fd);
 }
 
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
-                  u64 c1, u64 c2) {
-  if ((op1 == 0 && op2 == 0))
+static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
+  if ((get_label_info(label)->flags & B_FLIPPED))
     return;
 
-  AOUT("solving cmp: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
   bool pushed = false;
   try {
-    z3::expr bv_c1 = __z3_context.bv_val((uint64_t)c1, size * 8);
-    z3::expr bv_c2 = __z3_context.bv_val((uint64_t)c2, size * 8);
-    z3::expr result = get_cmd(bv_c1, bv_c2, predicate).simplify();
-
-    z3::expr lhs = bv_c1, rhs = bv_c2;
-    if (op1 != 0) lhs = serialize(op1);
-    if (op2 != 0) rhs = serialize(op2);
-    z3::expr pe = get_cmd(lhs, rhs, predicate);
-
-    __z3_solver.push();
-    pushed = true;
-    __z3_solver.add(pe != result);
-    z3::check_result res = __z3_solver.check();
-
-    //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-    if (res == z3::sat) {
-      AOUT("solved\n");
-      z3::model m = __z3_solver.get_model();
-      generate_input(m);
-    } else if (res == z3::unsat) {
-      AOUT("branch not solvable\n");
-
-      // optimistic?
-      z3::solver solver = z3::solver(__z3_context, "QF_BV");
-      solver.set("timeout", 5000U);
-      solver.add(pe != result);
-      if (solver.check() == z3::sat) {
-        z3::model m = solver.get_model();
-        generate_input(m);
-      }
-    }
-
-    __z3_solver.pop();
-    pushed = false;
-    // nested branch
-    __z3_solver.add(pe == result);
-  } catch (z3::exception e) {
-    Report("WARNING: solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
-  }
-  
-  if (pushed) __z3_solver.pop();
-
-}
-
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_cond(dfsan_label label, u8 r) {
-  if (label == 0)
-    return;
-
-  if ((__dfsan_label_info[label].flags & B_FLIPPED))
-    return;
-
-  void *addr = __builtin_return_address(0);
-  auto itr = __branches.find({__taint_trace_callstack, addr});
-  if (itr == __branches.end()) {
-    itr = __branches.insert({{__taint_trace_callstack, addr}, 1}).first;
-  } else if (itr->second < MAX_BRANCH_COUNT) {
-    itr->second += 1;
-  } else {
-    return;
-  }
-
-  AOUT("solving cond: %u %u %u %p %u\n", label, r, __taint_trace_callstack, addr, itr->second);
-  bool pushed = false;
-  try {
-    z3::expr result = __z3_context.bool_val(r);
     z3::expr cond = serialize(label);
 
 #if 0
-    if (__dfsan_label_info[label].tree_size > 50000) {
+    if (get_label_info(label)->tree_size > 50000) {
       // don't bother?
       throw z3::exception("formula too large");
     }
@@ -896,13 +827,61 @@ __taint_trace_cond(dfsan_label label, u8 r) {
     // nested branch
     __z3_solver.add(cond == result);
     // mark as flipped
-    __dfsan_label_info[label].flags |= B_FLIPPED;
+    get_label_info(label)->flags |= B_FLIPPED;
   } catch (z3::exception e) {
-    Report("WARNING: solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
+    Report("WARNING: solving error: %s @%p\n", e.msg(), addr);
   }
   
   if (pushed) __z3_solver.pop();
 
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
+                  u64 c1, u64 c2) {
+  if ((op1 == 0 && op2 == 0))
+    return;
+
+  void *addr = __builtin_return_address(0);
+  auto itr = __branches.find({__taint_trace_callstack, addr});
+  if (itr == __branches.end()) {
+    itr = __branches.insert({{__taint_trace_callstack, addr}, 1}).first;
+  } else if (itr->second < MAX_BRANCH_COUNT) {
+    itr->second += 1;
+  } else {
+    return;
+  }
+
+  AOUT("solving cmp: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
+
+  dfsan_label temp = dfsan_union(op1, op2, (predicate << 8) | ICmp, size, c1, c2);
+
+  z3::expr bv_c1 = __z3_context.bv_val((uint64_t)c1, size * 8);
+  z3::expr bv_c2 = __z3_context.bv_val((uint64_t)c2, size * 8);
+  z3::expr result = get_cmd(bv_c1, bv_c2, predicate).simplify();
+
+  __solve_cond(temp, result, addr);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__taint_trace_cond(dfsan_label label, u8 r) {
+  if (label == 0)
+    return;
+
+  void *addr = __builtin_return_address(0);
+  auto itr = __branches.find({__taint_trace_callstack, addr});
+  if (itr == __branches.end()) {
+    itr = __branches.insert({{__taint_trace_callstack, addr}, 1}).first;
+  } else if (itr->second < MAX_BRANCH_COUNT) {
+    itr->second += 1;
+  } else {
+    return;
+  }
+
+  AOUT("solving cond: %u %u %u %p %u\n", label, r, __taint_trace_callstack, addr, itr->second);
+
+  z3::expr result = __z3_context.bool_val(r);
+  __solve_cond(label, result, addr);
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
