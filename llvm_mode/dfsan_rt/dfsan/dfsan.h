@@ -25,14 +25,17 @@ using __sanitizer::u32;
 using __sanitizer::u16;
 using __sanitizer::u8;
 
-#define AOUT(...)                                       \
+#if 0
+# define AOUT(...)
+#else
+# define AOUT(...)                                       \
   do {                                                  \
     if (1)  {                                           \
       Printf("[RT] (%s:%d) ", __FUNCTION__, __LINE__);  \
       Printf(__VA_ARGS__);                              \
     }                                                   \
   } while(false)
-
+#endif
 // Copy declarations from public sanitizer/dfsan_interface.h header here.
 typedef u32 dfsan_label;
 
@@ -127,6 +130,8 @@ inline Flags &flags() {
 }
 
 enum operators {
+  Not       = 1,
+  Neg       = 2,
 #define HANDLE_BINARY_INST(num, opcode, Class) opcode = num,
 #define HANDLE_CAST_INST(num, opcode, Class) opcode = num,
 #define HANDLE_OTHER_INST(num, opcode, Class) opcode = num,
@@ -137,8 +142,6 @@ enum operators {
 #undef HANDLE_OTHER_INST
 #undef LAST_OTHER_INST
   // self-defined
-  Not       = last_llvm_op + 1,
-  Neg       = last_llvm_op + 2,
   Load      = last_llvm_op + 3,
   Extract   = last_llvm_op + 4,
   Concat    = last_llvm_op + 5,
