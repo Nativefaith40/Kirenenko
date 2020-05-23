@@ -186,7 +186,7 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
     Swap(l1, l2);
     Swap(op1, op2);
   }
-  if (l1 == 0 && l2 < CONST_OFFSET) return 0;
+  if (l1 == 0 && l2 < CONST_OFFSET && op != fsize) return 0;
   if (l1 == kInitializingLabel || l2 == kInitializingLabel) return kInitializingLabel;
 
   if (l1 >= CONST_OFFSET) op1 = 0;
@@ -669,6 +669,15 @@ static z3::expr serialize(dfsan_label label) {
     // don't cache becaue of read_concrete?
     return z3::ite(op1 == op2, __z3_context.bv_val(0, 32),
                                __z3_context.bv_val(1, 32));
+  } else if (info->op == fsize) {
+    // file size
+    z3::symbol symbol = __z3_context.str_symbol("fsize");
+    z3::sort sort = __z3_context.bv_sort(info->size * 8);
+    z3::expr base = __z3_context.constant(symbol, sort);
+    info->tree_size = 1; // lazy init
+    // minus the offset stored in op1
+    z3::expr offset = __z3_context.bv_val((uint64_t)info->op1, info->size * 8);
+    return cache_expr(info, base - offset);
   }
 
   // common ops
@@ -756,6 +765,17 @@ static void generate_input(z3::model &m) {
       u8 value = (u8)e.get_numeral_int();
       internal_lseek(fd, name.to_int(), SEEK_SET);
       WriteToFile(fd, &value, sizeof(value));
+    } else { // string symbol
+      if (!name.str().compare("fsize")) {
+        off_t size = (off_t)e.get_numeral_int64();
+        if (size > tainted.size) { // grow
+          internal_lseek(fd, size, SEEK_SET);
+          u8 dummy = 0;
+          WriteToFile(fd, &dummy, sizeof(dummy));
+        } else {
+          internal_ftruncate(fd, size);
+        }
+      }
     }
   }
 

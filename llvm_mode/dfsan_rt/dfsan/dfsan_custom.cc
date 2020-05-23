@@ -61,8 +61,11 @@ SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_stat(const char *path, struct stat *buf, dfsan_label path_label,
             dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = stat(path, buf);
-  if (ret == 0)
+  if (ret == 0) {
     dfsan_set_label(0, buf, sizeof(struct stat));
+    dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size), 0, 0);
+    dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
+  }
   *ret_label = 0;
   return ret;
 }
@@ -72,8 +75,11 @@ __dfsw___xstat(int vers, const char *path, struct stat *buf,
                dfsan_label vers_label, dfsan_label path_label,
                dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = __xstat(vers, path, buf);
-  if (ret == 0)
+  if (ret == 0) {
     dfsan_set_label(0, buf, sizeof(struct stat));
+    dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size), 0, 0);
+    dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
+  }
   *ret_label = 0;
   return ret;
 }
@@ -83,8 +89,11 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_fstat(int fd, struct stat *buf,
                                                dfsan_label buf_label,
                                                dfsan_label *ret_label) {
   int ret = fstat(fd, buf);
-  if (ret == 0)
+  if (ret == 0) {
     dfsan_set_label(0, buf, sizeof(struct stat));
+    dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size), 0, 0);
+    dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
+  }
   *ret_label = 0;
   return ret;
 }
@@ -94,8 +103,11 @@ __dfsw___fxstat(int vers, const int fd, struct stat *buf,
                 dfsan_label vers_label, dfsan_label fd_label,
                 dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = __fxstat(vers, fd, buf);
-  if (ret == 0)
+  if (ret == 0) {
     dfsan_set_label(0, buf, sizeof(struct stat));
+    dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size), 0, 0);
+    dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
+  }
   *ret_label = 0;
   return ret;
 }
@@ -104,8 +116,11 @@ SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_lstat(const char *path, struct stat *buf, dfsan_label path_label,
              dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = lstat(path, buf);
-  if (ret == 0)
+  if (ret == 0) {
     dfsan_set_label(0, buf, sizeof(struct stat));
+    dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size), 0, 0);
+    dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
+  }
   *ret_label = 0;
   return ret;
 }
@@ -115,8 +130,11 @@ __dfsw___lxstat(int vers, const char *path, struct stat *buf,
                 dfsan_label vers_label, dfsan_label path_label,
                 dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = __lxstat(vers, path, buf);
-  if (ret == 0)
+  if (ret == 0) {
     dfsan_set_label(0, buf, sizeof(struct stat));
+    dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size), 0, 0);
+    dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
+  }
   *ret_label = 0;
   return ret;
 }
@@ -377,15 +395,18 @@ __dfsw_pread(int fd, void *buf, size_t count, off_t offset,
              dfsan_label count_label, dfsan_label offset_label,
              dfsan_label *ret_label) {
   ssize_t ret = pread(fd, buf, count, offset);
-  if (ret > 0) {
+  *ret_label = 0;
+  if (ret >= 0) {
     if (taint_get_file(fd)) {
       dfsan_label label = offset + CONST_OFFSET;
       for (ssize_t i = 0; i < ret; i++) {
         dfsan_set_label(label + i, (char *)buf + i, 1);
       }
-    } else dfsan_set_label(0, buf, ret);
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+    } else {
+      dfsan_set_label(0, buf, ret);
+    }
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -396,19 +417,21 @@ __dfsw_read(int fd, void *buf, size_t count,
              dfsan_label *ret_label) {
   off_t offset = lseek(fd, 0, SEEK_CUR);
   ssize_t ret = read(fd, buf, count);
-  if (ret > 0) {
-    AOUT("offset = %d, ret = %d\n", offset, ret);
+  *ret_label = 0;
+  if (ret >= 0) {
     if (taint_get_file(fd)) {
+      AOUT("offset = %d, ret = %d\n", offset, ret);
       dfsan_label label = offset + CONST_OFFSET;
       for(ssize_t i = 0; i < ret; i++) {
         dfsan_set_label(label + i, (char *)buf + i, 1);
       }
-      for (size_t i = ret; i < count; i++)
-        dfsan_set_label(-1, (char *)buf + i, 1);
+      // for (size_t i = ret; i < count; i++)
+      //   dfsan_set_label(-1, (char *)buf + i, 1);
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+    } else {
+      dfsan_set_label(0, buf, ret);
     }
-    else dfsan_set_label(0, buf, ret);
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -520,36 +543,6 @@ char *__dfsw_ctime_r(const time_t *timep, char *buf, dfsan_label timep_label,
   } else {
     *ret_label = 0;
   }
-  return ret;
-}
-
-SANITIZER_INTERFACE_ATTRIBUTE
-char *__dfsw_fgets(char *s, int size, FILE *stream, dfsan_label s_label,
-                   dfsan_label size_label, dfsan_label stream_label,
-                   dfsan_label *ret_label) {
-  int fd = fileno(stream);
-  off_t offset = ftell(stream);
-  char *ret = fgets(s, size, stream);
-  AOUT(" ");
-  if (ret) {
-    if (taint_get_file(fd)) {
-      dfsan_label label = offset + CONST_OFFSET;
-      // including terminating \0
-      for(size_t i = 0; i < strlen(ret) + 1; i++) {
-        char *buf = s + i;
-        dfsan_set_label(label + i, buf, 1);
-      }
-      for(int i = strlen(ret) + 1; i < size; i++) {
-        char *buf = s + i;
-        dfsan_set_label(-1, buf, 1);
-      }
-      //*ret_label = offset + 1;
-    }
-    else {
-      dfsan_set_label(0, s, strlen(ret) + 1);
-    }
-    *ret_label = s_label;
-  } else *ret_label = 0;
   return ret;
 }
 
@@ -1332,20 +1325,21 @@ __dfsw_fread(void *ptr, size_t size, size_t nmemb, FILE *stream,
   int fd = fileno(stream);
   off_t offset = ftell(stream);
   size_t ret = fread(ptr, size, nmemb, stream);
+  *ret_label = 0;
   AOUT("fread(%u,%u) = %u, off = %u\n", size, nmemb, ret, offset);
   if (ret) {
     if (taint_get_file(fd)) {
       for (size_t i = 0; i < ret * size; i++) {
         dfsan_set_label(get_label_for(fd, offset + i), (char *)ptr + i, 1);
       }
-      for (size_t i = ret * size; i < size * nmemb; i++) {
-        dfsan_set_label(-1, (char *)ptr + i, 1);
-      }
+      // for (size_t i = ret * size; i < size * nmemb; i++) {
+      //   dfsan_set_label(-1, (char *)ptr + i, 1);
+      // }
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -1358,19 +1352,21 @@ __dfsw_fread_unlocked(
   int fd = fileno(stream);
   off_t offset = ftell(stream);
   size_t ret = fread(ptr, size, nmemb, stream);
+  *ret_label = 0;
+  AOUT("fread(%u,%u) = %u, off = %u\n", size, nmemb, ret, offset);
   if (ret) {
     if (taint_get_file(fd)) {
       for (size_t i = 0; i < ret * size; i++) {
         dfsan_set_label(get_label_for(fd, offset + i), (char *)ptr + i, 1);
       }
-      for (size_t i = ret * size; i < nmemb * size; i++) {
-        dfsan_set_label(-1, (char *)ptr + i, 1);
-      }
+      // for (size_t i = ret * size; i < nmemb * size; i++) {
+      //   dfsan_set_label(-1, (char *)ptr + i, 1);
+      // }
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -1381,18 +1377,20 @@ __dfsw_getline(char **lineptr, size_t *n, FILE *stream,
   int fd = fileno(stream);
   off_t offset = ftell(stream);
   ssize_t ret = getline(lineptr, n, stream);
+  *ret_label = 0;
   if (ret) {
     if (taint_get_file(fd)) {
       // including a terminating null byte
-      for(ssize_t i = 0; i <= ret; i++) {
+      for (ssize_t i = 0; i < ret; i++) {
         void *addr = (*lineptr) + i;
         dfsan_set_label(get_label_for(fd, offset + i), addr, 1);
       }
+      dfsan_set_label(0, (*lineptr) + ret, 1);
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, *lineptr, ret + 1);
     }
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -1405,18 +1403,20 @@ __dfsw_getdelim(char **lineptr, size_t *n, int delim, FILE *stream,
   int fd = fileno(stream);
   off_t offset = ftell(stream);
   ssize_t ret = getdelim(lineptr, n, delim, stream);
+  *ret_label = 0;
   if (ret) {
     if (taint_get_file(fd)) {
       // including a terminating null byte
-      for(ssize_t i = 0; i <= ret; i++) {
+      for(ssize_t i = 0; i < ret; i++) {
         void *addr = (*lineptr) + i;
         dfsan_set_label(get_label_for(fd, offset + i), addr, 1);
       }
+      dfsan_set_label(0, (*lineptr) + ret, 1);
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, *lineptr, ret + 1);
     }
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -1428,17 +1428,19 @@ __dfsw___getdelim(char **lineptr, size_t *n, int delim, FILE *stream,
   int fd = fileno(stream);
   off_t offset = ftell(stream);
   ssize_t ret = __getdelim(lineptr, n, delim, stream);
+  *ret_label = 0;
   if (ret) {
     if (taint_get_file(fd)) {
-      for(ssize_t i = 0; i <= ret; i++) {
+      for(ssize_t i = 0; i < ret; i++) {
         void *addr = (*lineptr) + i;
         dfsan_set_label(get_label_for(fd, offset + i), addr, 1);
       }
+      dfsan_set_label(0, (*lineptr) + ret, 1);
+      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, *lineptr, ret + 1);
     }
   }
-  *ret_label = 0;
   return ret;
 }
 
@@ -1477,14 +1479,43 @@ __dfsw_setutxent(void) {
 SANITIZER_INTERFACE_ATTRIBUTE struct utmpx *
 __dfsw_getutxent(dfsan_label *ret_label) {
   struct utmpx *ret = getutxent();
+  *ret_label = 0;
   if (ret && is_utmp_taint()) {
     off_t offset = get_utmp_offset();
     dfsan_label label = offset + CONST_OFFSET;
-    for(size_t i = 0; i < sizeof(struct utmpx); i++) {
+    for (size_t i = 0; i < sizeof(struct utmpx); i++) {
       dfsan_set_label(label + i, (char *)ret + i, 1);
     }
     set_utmp_offset(offset + sizeof(struct utmpx));
   }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+char *__dfsw_fgets(char *s, int size, FILE *stream, dfsan_label s_label,
+                   dfsan_label size_label, dfsan_label stream_label,
+                   dfsan_label *ret_label) {
+  int fd = fileno(stream);
+  off_t offset = ftell(stream);
+  char *ret = fgets(s, size, stream);
+  if (ret) {
+    if (taint_get_file(fd)) {
+      dfsan_label label = offset + CONST_OFFSET;
+      // including terminating \0
+      for (size_t i = 0; i < strlen(ret); i++) {
+        char *buf = s + i;
+        dfsan_set_label(label + i, buf, 1);
+      }
+      dfsan_set_label(0, s + strlen(ret), 1);
+      // for(int i = strlen(ret) + 1; i < size; i++) {
+      //   char *buf = s + i;
+      //   dfsan_set_label(-1, buf, 1);
+      // }
+    } else {
+      dfsan_set_label(0, s, strlen(ret) + 1);
+    }
+    *ret_label = s_label;
+  } else *ret_label = 0;
   return ret;
 }
 
@@ -1495,18 +1526,18 @@ char *__dfsw_fgets_unlocked(char *s, int size, FILE *stream, dfsan_label s_label
   int fd = fileno(stream);
   off_t offset = ftell(stream);
   char *ret = fgets_unlocked(s, size, stream);
-  AOUT(" ");
   if (ret) {
     if (taint_get_file(fd)) {
       // including terminating \0
-      for(size_t i = 0; i < strlen(ret) + 1; i++) {
+      for(size_t i = 0; i < strlen(ret); i++) {
         char *buf = s + i;
         dfsan_set_label(get_label_for(fd, offset + i), buf, 1);
       }
-      for(int i = strlen(ret) + 1; i < size; i++) {
-        char *buf = s + i;
-        dfsan_set_label(-1, buf, 1);
-      }
+      dfsan_set_label(0, s + strlen(ret), 1);
+      // for(int i = strlen(ret) + 1; i < size; i++) {
+      //   char *buf = s + i;
+      //   dfsan_set_label(-1, buf, 1);
+      // }
     } else {
       dfsan_set_label(0, s, strlen(ret) + 1);
     }
@@ -1634,7 +1665,7 @@ __dfsw_getchar(dfsan_label *ret_label) {
   off_t offset = ftell(stdin);
   int ret = getchar();
   if (ret != EOF && taint_get_file(0)) {
-    *ret_label = dfsan_create_label(offset);
+    *ret_label = dfsan_union(0, dfsan_create_label(offset), ZExt, 4, 0, 0);
     AOUT("%d label is readed by getchar\n", *ret_label);
   } else *ret_label = 0;
   return ret;
