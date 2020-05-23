@@ -638,7 +638,7 @@ static z3::expr serialize(dfsan_label label) {
   } else if (info->op == Extract) {
     z3::expr base = serialize(info->l1);
     info->tree_size = get_label_info(info->l1)->tree_size; // lazy init
-    return base.extract((info->op2 + info->size) * 8 - 1, info->op2 * 8);
+    return cache_expr(info, base.extract((info->op2 + info->size) * 8 - 1, info->op2 * 8));
   } else if (info->op == Not) {
     if (info->l2 == 0 || info->size) {
       throw z3::exception("invalid Not operation");
