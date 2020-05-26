@@ -1227,6 +1227,7 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
     // op should be predicate
     op |= (CI->getPredicate() << 8);
   }
+  if (size < 8 && size > 1) size = 8; // keep minimum 1-byte size for non-boolean
   size /= 8;
   Value *Op = ConstantInt::get(TT.Int16Ty, op);
   Value *Size = ConstantInt::get(TT.Int8Ty, size);
@@ -1427,6 +1428,7 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   // get operand
   Value *Op1 = I->getOperand(0);
   unsigned size = DL.getTypeSizeInBits(Op1->getType());
+  if (size < 8 && size > 1) size = 8; // keep minimum 1-byte size for non-boolean
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   Value *Op2 = I->getOperand(1);
   Value *Op1Shadow = getShadow(Op1);
@@ -1462,6 +1464,7 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   if (CondShadow == TT.ZeroShadow)
     return;
   unsigned size = DL.getTypeSizeInBits(Cond->getType());
+  if (size < 8 && size > 1) size = 8; // keep minimum 1-byte size for non-boolean
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   ConstantInt *Predicate = ConstantInt::get(TT.ShadowTy, 32); // EQ, ==
 
