@@ -1428,7 +1428,7 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   // get operand
   Value *Op1 = I->getOperand(0);
   unsigned size = DL.getTypeSizeInBits(Op1->getType());
-  if (size < 8 && size > 1) size = 8; // keep minimum 1-byte size for non-boolean
+  if (size < 8) size = 8; // keep minimum 1-byte size
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   Value *Op2 = I->getOperand(1);
   Value *Op1Shadow = getShadow(Op1);
@@ -1464,7 +1464,7 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   if (CondShadow == TT.ZeroShadow)
     return;
   unsigned size = DL.getTypeSizeInBits(Cond->getType());
-  if (size < 8 && size > 1) size = 8; // keep minimum 1-byte size for non-boolean
+  if (size < 8) size = 8; // keep minimum 1-byte size
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
   ConstantInt *Predicate = ConstantInt::get(TT.ShadowTy, 32); // EQ, ==
 
