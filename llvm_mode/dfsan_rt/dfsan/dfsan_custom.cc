@@ -805,6 +805,7 @@ int __dfsw_sigemptyset(sigset_t *set, dfsan_label set_label,
                        dfsan_label *ret_label) {
   int ret = sigemptyset(set);
   dfsan_set_label(0, set, sizeof(sigset_t));
+  *ret_label = 0;
   return ret;
 }
 
@@ -944,6 +945,7 @@ __dfsw_dfsan_set_write_callback(
     dfsan_label *ret_label) {
   write_callback_info.write_callback_trampoline = write_callback_trampoline;
   write_callback_info.write_callback = write_callback;
+  *ret_label = 0;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE int
@@ -1314,6 +1316,7 @@ __dfsw_fclose(FILE *fp, dfsan_label fp_label, dfsan_label *ret_label) {
   int fd = fileno(fp);
   int ret = fclose(fp);
   if (!ret) taint_close_file(fd);
+  *ret_label = 0;
   return ret;
 }
 
