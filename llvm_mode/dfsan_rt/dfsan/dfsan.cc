@@ -293,7 +293,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
     for (uptr i = 0; i < n; i++) {
       dfsan_label_info *info = get_label_info(ls[i]);
       if (!is_kind_of_label(ls[i], Extract)
-            || offset != info->op1
+            || offset != info->op2
             || parent != info->l1) {
         break;
       }
@@ -593,7 +593,7 @@ static z3::expr serialize(dfsan_label label) {
   }
 
   dfsan_label_info *info = &__dfsan_label_info[label];
-  AOUT("%u = (l1:%u, l2:%u, op:%u, size:%u, op1:%llu, op2:%llu\n",
+  AOUT("%u = (l1:%u, l2:%u, op:%u, size:%u, op1:%llu, op2:%llu)\n",
        label, info->l1, info->l2, info->op, info->size, info->op1, info->op2);
 
   if (info->expr) {
@@ -808,7 +808,7 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
       z3::model m = __z3_solver.get_model();
       generate_input(m);
     } else if (res == z3::unsat) {
-      AOUT("branch not solvable\n");
+      AOUT("branch not solvable @%p\n", addr);
       //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
       //AOUT("  tree_size = %d", __dfsan_label_info[label].tree_size);
 
