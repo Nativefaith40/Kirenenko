@@ -73,7 +73,7 @@ static z3::context __z3_context;
 static z3::solver __z3_solver(__z3_context, "QF_BV");
 
 // filter?
-__thread u32 __taint_trace_callstack;
+SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL u32 __taint_trace_callstack;
 typedef std::pair<u32, void*> trace_context;
 struct context_hash {
   std::size_t operator()(const trace_context &context) const {

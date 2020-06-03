@@ -347,7 +347,7 @@ class Taint : public ModulePass {
   Constant *TaintTraceIndirectCallFn;
   Constant *TaintTraceGEPFn;
   Constant *TaintDebugFn;
-  GlobalVariable *CallStack;
+  Constant *CallStack;
   MDNode *ColdCallWeights;
   TaintABIList ABIList;
   DenseMap<Value *, Function *> UnwrappedFnMap;
@@ -861,16 +861,9 @@ bool Taint::runOnModule(Module &M) {
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
 
-  CallStack = Mod->getGlobalVariable("__taint_trace_callstack");
-  if (!CallStack) {
-    CallStack =
-      new GlobalVariable(*Mod, PointerType::get(Int32Ty, 0), false,
-                         GlobalValue::CommonLinkage,
-                         ConstantInt::get(Int32Ty, 0),
-                         "__taint_trace_callstack",
-                         nullptr,
-                         GlobalValue::GeneralDynamicTLSModel);
-  }
+  CallStack = Mod->getOrInsertGlobal("__taint_trace_callstack", Int32Ty);
+  if (GlobalVariable *G = dyn_cast<GlobalVariable>(CallStack))
+    G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
 
   std::vector<Function *> FnsToInstrument;
   SmallPtrSet<Function *, 2> FnsWithNativeABI;
