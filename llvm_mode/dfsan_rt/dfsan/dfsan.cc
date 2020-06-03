@@ -825,7 +825,14 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
     __z3_solver.pop();
     pushed = false;
     // nested branch
+    __z3_solver.push();
     __z3_solver.add(cond == result);
+    res = __z3_solver.check(); // double check
+    __z3_solver.pop();
+    if (res == z3::sat)
+      __z3_solver.add(cond == result);
+    else
+      Report("WARNING: nested condition is not sat\n");
     // mark as flipped
     get_label_info(label)->flags |= B_FLIPPED;
   } catch (z3::exception e) {
