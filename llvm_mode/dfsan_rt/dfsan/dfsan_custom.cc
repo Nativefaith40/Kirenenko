@@ -402,7 +402,7 @@ __dfsw_pread(int fd, void *buf, size_t count, off_t offset,
       for (ssize_t i = 0; i < ret; i++) {
         dfsan_set_label(label + i, (char *)buf + i, 1);
       }
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, buf, ret);
     }
@@ -427,7 +427,7 @@ __dfsw_read(int fd, void *buf, size_t count,
       }
       // for (size_t i = ret; i < count; i++)
       //   dfsan_set_label(-1, (char *)buf + i, 1);
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, buf, ret);
     }
@@ -1355,7 +1355,7 @@ __dfsw_fread(void *ptr, size_t size, size_t nmemb, FILE *stream,
       // for (size_t i = ret * size; i < size * nmemb; i++) {
       //   dfsan_set_label(-1, (char *)ptr + i, 1);
       // }
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
@@ -1399,7 +1399,7 @@ __dfsw_fread_unlocked(
       // for (size_t i = ret * size; i < nmemb * size; i++) {
       //   dfsan_set_label(-1, (char *)ptr + i, 1);
       // }
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
@@ -1423,7 +1423,7 @@ __dfsw_getline(char **lineptr, size_t *n, FILE *stream,
         dfsan_set_label(get_label_for(fd, offset + i), addr, 1);
       }
       dfsan_set_label(0, (*lineptr) + ret, 1);
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, *lineptr, ret + 1);
     }
@@ -1473,7 +1473,7 @@ __dfsw___getdelim(char **lineptr, size_t *n, int delim, FILE *stream,
         dfsan_set_label(get_label_for(fd, offset + i), addr, 1);
       }
       dfsan_set_label(0, (*lineptr) + ret, 1);
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
     } else {
       dfsan_set_label(0, *lineptr, ret + 1);
     }

@@ -675,9 +675,13 @@ static z3::expr serialize(dfsan_label label) {
     z3::sort sort = __z3_context.bv_sort(info->size * 8);
     z3::expr base = __z3_context.constant(symbol, sort);
     info->tree_size = 1; // lazy init
-    // minus the offset stored in op1
-    z3::expr offset = __z3_context.bv_val((uint64_t)info->op1, info->size * 8);
-    return cache_expr(info, base - offset);
+    if (info->op1) {
+      // minus the offset stored in op1
+      z3::expr offset = __z3_context.bv_val((uint64_t)info->op1, info->size * 8);
+      return cache_expr(info, base - offset);
+    } else {
+      return cache_expr(info, base);
+    }
   }
 
   // common ops
