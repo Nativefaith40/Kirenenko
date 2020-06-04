@@ -96,6 +96,9 @@ dfsan_label taint_get_offset_label();
 off_t get_utmp_offset(void);
 void set_utmp_offset(off_t offset);
 int is_utmp_taint(void);
+
+// additional constraints
+void add_constraints(dfsan_label label);
 }  // extern "C"
 
 template <typename T>

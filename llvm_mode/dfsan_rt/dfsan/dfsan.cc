@@ -769,6 +769,7 @@ static void generate_input(z3::model &m) {
     if (name.kind() == Z3_INT_SYMBOL) {
       dfsan_label l = name.to_int();
       u8 value = (u8)e.get_numeral_int();
+      AOUT("offset %lld = %x\n", get_label_info(l)->op1, value);
       internal_lseek(fd, get_label_info(l)->op1, SEEK_SET);
       WriteToFile(fd, &value, sizeof(value));
     } else { // string symbol
@@ -789,6 +790,29 @@ static void generate_input(z3::model &m) {
   }
 
   CloseFile(fd);
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE void
+add_constraints(dfsan_label label) {
+  if ((get_label_info(label)->flags & B_FLIPPED))
+    return;
+
+  try {
+    z3::expr c = serialize(label);
+    __z3_solver.push();
+    __z3_solver.add(c);
+    z3::check_result res = __z3_solver.check();
+    __z3_solver.pop();
+    if (res == z3::sat) {
+      __z3_solver.add(c);
+    } else {
+      Report("WARNING: failed to add constraints %d\n", label);
+    }
+  } catch (z3::exception e) {
+    Report("WARNING: adding constraints error: %s\n", e.msg());
+  }
+
+  get_label_info(label)->flags |= B_FLIPPED;
 }
 
 static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {

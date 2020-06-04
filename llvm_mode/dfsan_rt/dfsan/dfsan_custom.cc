@@ -1329,6 +1329,7 @@ __dfsw_fread(void *ptr, size_t size, size_t nmemb, FILE *stream,
   off_t tfsize = taint_get_file(fd);
   off_t offset = ftell(stream);
   *ret_label = 0;
+#if 0
   // check taint file size
   if (tfsize && (tfsize < offset + (size * nmemb))) {
     // if smaller than a tainted offset, enlarge
@@ -1345,6 +1346,7 @@ __dfsw_fread(void *ptr, size_t size, size_t nmemb, FILE *stream,
       return nmemb; // directly return
     }
   }
+#endif
   size_t ret = fread(ptr, size, nmemb, stream);
   AOUT("fread(%u,%u) = %lld, off = %lld\n", size, nmemb, ret, offset);
   if (ret) {
@@ -1356,6 +1358,12 @@ __dfsw_fread(void *ptr, size_t size, size_t nmemb, FILE *stream,
       //   dfsan_set_label(-1, (char *)ptr + i, 1);
       // }
       // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      dfsan_label offset_label = taint_get_offset_label();
+      if (offset_label) {
+        dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp,
+            sizeof(offset), 0, offset);
+        add_constraints(sc);
+      }
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
@@ -1373,6 +1381,7 @@ __dfsw_fread_unlocked(
   off_t tfsize = taint_get_file(fd);
   off_t offset = ftell(stream);
   *ret_label = 0;
+#if 0
   // check taint file size
   if (tfsize && (tfsize < offset + (size * nmemb))) {
     // if smaller than a tainted offset, enlarge
@@ -1389,6 +1398,7 @@ __dfsw_fread_unlocked(
       return nmemb; // directly return
     }
   }
+#endif
   size_t ret = fread(ptr, size, nmemb, stream);
   AOUT("fread(%u,%u) = %lld, off = %lld\n", size, nmemb, ret, offset);
   if (ret) {
