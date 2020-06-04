@@ -603,7 +603,7 @@ static z3::expr serialize(dfsan_label label) {
   // special ops
   if (info->op == 0) {
     // input
-    z3::symbol symbol = __z3_context.int_symbol(info->op1);
+    z3::symbol symbol = __z3_context.int_symbol(label);
     z3::sort sort = __z3_context.bv_sort(8);
     info->tree_size = 1; // lazy init
     return cache_expr(info, __z3_context.constant(symbol, sort));
@@ -753,6 +753,7 @@ static void generate_input(z3::model &m) {
     // FIXME: input is stdin
     throw z3::exception("original input is stdin");
   }
+  AOUT("generate #%d output\n", __current_index - 1);
 
   // from qsym
   unsigned num_constants = m.num_consts();
@@ -762,8 +763,9 @@ static void generate_input(z3::model &m) {
     z3::symbol name = decl.name();
 
     if (name.kind() == Z3_INT_SYMBOL) {
+      dfsan_label l = name.to_int();
       u8 value = (u8)e.get_numeral_int();
-      internal_lseek(fd, name.to_int(), SEEK_SET);
+      internal_lseek(fd, get_label_info(l)->op1, SEEK_SET);
       WriteToFile(fd, &value, sizeof(value));
     } else { // string symbol
       if (!name.str().compare("fsize")) {
@@ -773,8 +775,11 @@ static void generate_input(z3::model &m) {
           u8 dummy = 0;
           WriteToFile(fd, &dummy, sizeof(dummy));
         } else {
+          AOUT("truncate file to %lld\n", size);
           internal_ftruncate(fd, size);
         }
+        // don't remember size constraints
+        throw z3::exception("skip fsize constraints");
       }
     }
   }
@@ -1016,6 +1021,16 @@ set_utmp_offset(off_t offset) {
 SANITIZER_INTERFACE_ATTRIBUTE off_t
 get_utmp_offset() {
   return tainted.offset;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE void
+taint_set_offset_label(dfsan_label label) {
+  tainted.offset_label = label;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
+taint_get_offset_label() {
+  return tainted.offset_label;
 }
 
 void Flags::SetDefaults() {
