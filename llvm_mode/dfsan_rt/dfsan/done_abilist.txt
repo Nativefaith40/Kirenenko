@@ -316,6 +316,10 @@ fun:mmap=custom
 fun:munmap=custom
 fun:mmap2=custom
 fun:open=custom
+fun:lseek=custom
+fun:fseek=custom
+fun:fseeko=custom
+fun:fseeko64=custom
 
 # for LAVA
 fun:utmpxname=custom
