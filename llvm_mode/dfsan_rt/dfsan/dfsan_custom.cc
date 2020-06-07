@@ -1358,12 +1358,6 @@ __dfsw_fread(void *ptr, size_t size, size_t nmemb, FILE *stream,
       //   dfsan_set_label(-1, (char *)ptr + i, 1);
       // }
       // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
-      dfsan_label offset_label = taint_get_offset_label();
-      if (offset_label) {
-        dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp,
-            sizeof(offset), 0, offset);
-        add_constraints(sc);
-      }
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
@@ -1777,8 +1771,14 @@ __dfsw_lseek(int fd, off_t offset, int whence, dfsan_label fd_label,
              dfsan_label *ret_label) {
   off_t ret = lseek(fd, offset, whence);
   if (ret != (off_t)-1) {
-    if (taint_get_file(fd))
+    if (taint_get_file(fd)) {
       taint_set_offset_label(offset_label);
+      if (offset_label) {
+        dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+            0, offset);
+        add_constraints(sc);
+      }
+    }
     *ret_label = offset_label;
   } else *ret_label = 0;
   return ret;
@@ -1793,6 +1793,11 @@ __dfsw_fseek(FILE *stream, long offset, int whence, dfsan_label stream_label,
   *ret_label = 0;
   if (ret == 0 && taint_get_file(fd)) {
     taint_set_offset_label(offset_label);
+    if (offset_label) {
+      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+          0, offset);
+      add_constraints(sc);
+    }
   }
   return ret;
 }
@@ -1806,6 +1811,11 @@ __dfsw_fseeko(FILE *stream, off_t offset, int whence, dfsan_label stream_label,
   *ret_label = 0;
   if (ret == 0 && taint_get_file(fd)) {
     taint_set_offset_label(offset_label);
+    if (offset_label) {
+      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+          0, offset);
+      add_constraints(sc);
+    }
   }
   return ret;
 }
@@ -1819,6 +1829,11 @@ __dfsw_fseeko64(FILE *stream, off64_t offset, int whence, dfsan_label stream_lab
   *ret_label = 0;
   if (ret == 0 && taint_get_file(fd)) {
     taint_set_offset_label(offset_label);
+    if (offset_label) {
+      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+          0, offset);
+      add_constraints(sc);
+    }
   }
   return ret;
 }
