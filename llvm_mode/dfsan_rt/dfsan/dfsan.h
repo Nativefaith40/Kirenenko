@@ -50,6 +50,7 @@ struct dfsan_label_info {
   u32 tree_size;
   u32 hash;
   void* expr;
+  void* deps;
 } __attribute__((aligned (8)));
 
 #define B_FLIPPED 0x1
