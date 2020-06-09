@@ -45,7 +45,7 @@ struct dfsan_label_info {
   u64 op1;
   u64 op2;
   u16 op;
-  u8 size;
+  u16 size;
   u8 flags;
   u32 tree_size;
   u32 hash;

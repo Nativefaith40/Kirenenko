@@ -137,7 +137,7 @@ static cl::opt<bool> ClDebugNonzeroLabels(
 static cl::opt<bool> ClTraceGEPOffset(
     "taint-trace-gep",
     cl::desc("Trace GEP offset for solving."),
-    cl::Hidden, cl::init(true));
+    cl::Hidden, cl::init(false));
 
 static cl::opt<bool> ClTraceFP(
     "taint-trace-float-pointer",
@@ -621,7 +621,7 @@ bool Taint::doInitialization(Module &M) {
   else
     report_fatal_error("unsupported triple");
 
-  Type *TaintUnionArgs[6] = { ShadowTy, ShadowTy, Int16Ty, Int8Ty, Int64Ty, Int64Ty};
+  Type *TaintUnionArgs[6] = { ShadowTy, ShadowTy, Int16Ty, Int16Ty, Int64Ty, Int64Ty};
   TaintUnionFnTy = FunctionType::get(
       ShadowTy, TaintUnionArgs, /*isVarArg=*/ false);
   Type *TaintUnionLoadArgs[2] = { ShadowPtrTy, IntptrTy };
@@ -1220,8 +1220,6 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
     // op should be predicate
     op |= (CI->getPredicate() << 8);
   }
-  if (size < 8 && size > 1) size = 8; // keep minimum 1-byte size for non-boolean
-  size /= 8;
   Value *Op = ConstantInt::get(TT.Int16Ty, op);
   Value *Size = ConstantInt::get(TT.Int8Ty, size);
   Value *Op1 = Pos->getOperand(0);
@@ -1421,8 +1419,7 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   // get operand
   Value *Op1 = I->getOperand(0);
   unsigned size = DL.getTypeSizeInBits(Op1->getType());
-  if (size < 8) size = 8; // keep minimum 1-byte size
-  ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
+  ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size);
   Value *Op2 = I->getOperand(1);
   Value *Op1Shadow = getShadow(Op1);
   Value *Op2Shadow = getShadow(Op2);
@@ -1457,8 +1454,7 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   if (CondShadow == TT.ZeroShadow)
     return;
   unsigned size = DL.getTypeSizeInBits(Cond->getType());
-  if (size < 8) size = 8; // keep minimum 1-byte size
-  ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size / 8);
+  ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size);
   ConstantInt *Predicate = ConstantInt::get(TT.ShadowTy, 32); // EQ, ==
 
   for (auto C : I->cases()) {
