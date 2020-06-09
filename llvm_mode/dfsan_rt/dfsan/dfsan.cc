@@ -807,6 +807,8 @@ static void generate_input(z3::model &m) {
           AOUT("truncate file to %lld\n", size);
           internal_ftruncate(fd, size);
         }
+        // don't remember size constraints
+        throw z3::exception("skip fsize constraints");
       }
     }
   }
