@@ -335,7 +335,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       } else {
         Report("WARNING: partial loading expected=%d has=%d\n", n-i, next_size);
         uptr size = n - i;
-        dfsan_label trunc = __taint_union(0, next_label, Trunc, size, 0, 0);
+        dfsan_label trunc = __taint_union(next_label, CONST_LABEL, Trunc, size, 0, 0);
         return __taint_union(label, trunc, Concat, n, 0, 0);
       }
     } else {
@@ -403,7 +403,7 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
 
   // simplify
   if (is_kind_of_label(l, ZExt)) {
-    dfsan_label orig = info->l2;
+    dfsan_label orig = info->l1;
     // size of ICmp result is different so just fall through to default
     if ((get_label_info(orig)->op & 0xff) != ICmp) {
       for (uptr i = get_label_info(orig)->size; i < n; ++i)
@@ -642,22 +642,22 @@ static z3::expr serialize(dfsan_label label, std::unordered_set<u32> &deps) {
     info->tree_size = 1; // lazy init
     return cache_expr(info, out, deps);
   } else if (info->op == ZExt) {
-    z3::expr base = serialize(info->l2, deps);
+    z3::expr base = serialize(info->l1, deps);
     if (base.is_bool()) // dirty hack since llvm lacks bool
       base = z3::ite(base, __z3_context.bv_val(1, 1),
                            __z3_context.bv_val(0, 1));
     u32 base_size = base.get_sort().bv_size();
-    info->tree_size = get_label_info(info->l2)->tree_size; // lazy init
+    info->tree_size = get_label_info(info->l1)->tree_size; // lazy init
     return cache_expr(info, z3::zext(base, info->size * 8 - base_size), deps);
   } else if (info->op == SExt) {
-    z3::expr base = serialize(info->l2, deps);
+    z3::expr base = serialize(info->l1, deps);
     u32 base_size = base.get_sort().bv_size();
-    info->tree_size = get_label_info(info->l2)->tree_size; // lazy init
+    info->tree_size = get_label_info(info->l1)->tree_size; // lazy init
     return cache_expr(info, z3::sext(base, info->size * 8 - base_size), deps);
   } else if (info->op == Trunc) {
-    z3::expr base = serialize(info->l2, deps);
-    info->tree_size = get_label_info(info->l2)->tree_size; // lazy init
-    return cache_expr(info, base.extract((info->l1 + info->size) * 8 - 1, info->l1 * 8), deps);
+    z3::expr base = serialize(info->l1, deps);
+    info->tree_size = get_label_info(info->l1)->tree_size; // lazy init
+    return cache_expr(info, base.extract((info->l2 + info->size) * 8 - 1, info->l2 * 8), deps);
   } else if (info->op == Extract) {
     z3::expr base = serialize(info->l1, deps);
     info->tree_size = get_label_info(info->l1)->tree_size; // lazy init
@@ -922,7 +922,7 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
     return;
   }
 
-  AOUT("solving cmp: %u %u %u %d %llu %llu\n", op1, op2, size, predicate, c1, c2);
+  AOUT("solving cmp: %u %u %u %d %llu %llu @%p\n", op1, op2, size, predicate, c1, c2, addr);
 
   dfsan_label temp = dfsan_union(op1, op2, (predicate << 8) | ICmp, size, c1, c2);
 

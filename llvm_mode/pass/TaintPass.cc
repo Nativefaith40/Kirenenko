@@ -137,7 +137,7 @@ static cl::opt<bool> ClDebugNonzeroLabels(
 static cl::opt<bool> ClTraceGEPOffset(
     "taint-trace-gep",
     cl::desc("Trace GEP offset for solving."),
-    cl::Hidden, cl::init(false));
+    cl::Hidden, cl::init(true));
 
 static cl::opt<bool> ClTraceFP(
     "taint-trace-float-pointer",
@@ -1260,8 +1260,8 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
 
 Value *TaintFunction::combineCastInstShadows(CastInst *CI,
                                              uint8_t op) {
-  Value *Shadow1 = TT.ZeroShadow;
-  Value *Shadow2 = getShadow(CI->getOperand(0));
+  Value *Shadow1 = getShadow(CI->getOperand(0));
+  Value *Shadow2 = TT.ZeroShadow;
   Value *Shadow = combineShadows(Shadow1, Shadow2, op, CI);
   return Shadow;
 }

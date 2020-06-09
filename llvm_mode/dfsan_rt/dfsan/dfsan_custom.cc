@@ -1624,6 +1624,8 @@ __dfsw___libc_realloc(void *ptr, size_t new_size,
 SANITIZER_INTERFACE_ATTRIBUTE
 void *__dfsw_malloc(size_t size, dfsan_label size_label,
                    dfsan_label *ret_label) {
+  if (size_label)
+    AOUT("malloc with tainted length: %d = %lld\n", size_label, size);
   void *ret = malloc(size);
   internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
   *ret_label = 0;
@@ -1658,7 +1660,7 @@ __dfsw_fgetc(FILE *stream, dfsan_label stream_label, dfsan_label *ret_label) {
   off_t offset = ftell(stream);
   int ret = fgetc(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
+    *ret_label = dfsan_union(get_label_for(fd, offset), CONST_LABEL, ZExt, 4, 0, 0);
     AOUT("%d label is readed by fgetc\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1670,7 +1672,7 @@ __dfsw_getc(FILE *stream, dfsan_label stream_label, dfsan_label *ret_label) {
   off_t offset = ftell(stream);
   int ret = getc(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
+    *ret_label = dfsan_union(get_label_for(fd, offset), CONST_LABEL, ZExt, 4, 0, 0);
     AOUT("%d label is readed by getc\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1683,7 +1685,7 @@ __dfsw_getc_unlocked(FILE *stream, dfsan_label stream_label,
   off_t offset = ftell(stream);
   int ret = getc_unlocked(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
+    *ret_label = dfsan_union(get_label_for(fd, offset), CONST_LABEL, ZExt, 4, 0, 0);
     AOUT("%d label is readed by getc_unlocked\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1695,7 +1697,7 @@ __dfsw__IO_getc(FILE *stream, dfsan_label stream_label, dfsan_label *ret_label) 
   off_t offset = ftell(stream);
   int ret = getc(stream);
   if (ret != EOF && taint_get_file(fd)) {
-    *ret_label = dfsan_union(0, get_label_for(fd, offset), ZExt, 4, 0, 0);
+    *ret_label = dfsan_union(get_label_for(fd, offset), CONST_LABEL, ZExt, 4, 0, 0);
     AOUT("%d label is readed by __IO_getc\n", *ret_label);
   } else *ret_label = 0;
   return ret;
@@ -1706,7 +1708,7 @@ __dfsw_getchar(dfsan_label *ret_label) {
   off_t offset = ftell(stdin);
   int ret = getchar();
   if (ret != EOF && taint_get_file(0)) {
-    *ret_label = dfsan_union(0, dfsan_create_label(offset), ZExt, 4, 0, 0);
+    *ret_label = dfsan_union(dfsan_create_label(offset), CONST_LABEL, ZExt, 4, 0, 0);
     AOUT("%d label is readed by getchar\n", *ret_label);
   } else *ret_label = 0;
   return ret;
