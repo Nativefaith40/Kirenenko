@@ -50,7 +50,7 @@
 #include <utility>
 #include <vector>
 
-#define OPTIMISTIC 0
+#define OPTIMISTIC 1
 
 using namespace __dfsan;
 
@@ -858,18 +858,22 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
 
     __z3_solver.reset();
     // add dependencies
+    branch_dep_t added;
     for (auto off : inputs) {
       auto c = __branch_deps->at(off);
       if (c) {
         for (auto &expr : *c) {
-          __z3_solver.add(expr);
+          if (added.insert(expr).second) {
+            //AOUT("adding expr: %s\n", expr.to_string().c_str());
+            __z3_solver.add(expr);
+          }
         }
       }
     }
-    __z3_solver.add(cond != result);
-    z3::check_result res = __z3_solver.check();
 
     //AOUT("%s\n", cond.to_string().c_str());
+    __z3_solver.add(cond != result);
+    z3::check_result res = __z3_solver.check();
     if (res == z3::sat) {
       AOUT("branch solved\n");
       z3::model m = __z3_solver.get_model();
@@ -985,11 +989,14 @@ __taint_trace_gep(dfsan_label label, u64 r) {
 
     __z3_solver.reset();
     // add dependencies
+    branch_dep_t added;
     for (auto off : inputs) {
       auto c = __branch_deps->at(off);
       if (c) {
         for (auto &expr : *c) {
-          __z3_solver.add(expr);
+          if (added.insert(expr).second) {
+            __z3_solver.add(expr);
+          }
         }
       }
     }
