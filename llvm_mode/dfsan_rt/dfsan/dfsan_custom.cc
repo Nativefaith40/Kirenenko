@@ -1403,7 +1403,7 @@ __dfsw_fread_unlocked(
       // for (size_t i = ret * size; i < nmemb * size; i++) {
       //   dfsan_set_label(-1, (char *)ptr + i, 1);
       // }
-      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret), offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret) * 8, offset, 0);
     } else {
       dfsan_set_label(0, ptr, ret * size);
     }
@@ -1453,7 +1453,7 @@ __dfsw_getdelim(char **lineptr, size_t *n, int delim, FILE *stream,
         dfsan_set_label(get_label_for(fd, offset + i), addr, 1);
       }
       dfsan_set_label(0, (*lineptr) + ret, 1);
-      *ret_label = dfsan_union(0, 0, fsize, sizeof(ret) * 8, offset, 0);
+      // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret) * 8, offset, 0);
     } else {
       dfsan_set_label(0, *lineptr, ret + 1);
     }
@@ -1776,7 +1776,7 @@ __dfsw_lseek(int fd, off_t offset, int whence, dfsan_label fd_label,
     if (taint_get_file(fd)) {
       taint_set_offset_label(offset_label);
       if (offset_label) {
-        dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+        dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset) * 8,
             0, offset);
         add_constraints(sc);
       }
@@ -1796,7 +1796,7 @@ __dfsw_fseek(FILE *stream, long offset, int whence, dfsan_label stream_label,
   if (ret == 0 && taint_get_file(fd)) {
     taint_set_offset_label(offset_label);
     if (offset_label) {
-      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset) * 8,
           0, offset);
       add_constraints(sc);
     }
@@ -1814,7 +1814,7 @@ __dfsw_fseeko(FILE *stream, off_t offset, int whence, dfsan_label stream_label,
   if (ret == 0 && taint_get_file(fd)) {
     taint_set_offset_label(offset_label);
     if (offset_label) {
-      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset) * 8,
           0, offset);
       add_constraints(sc);
     }
@@ -1832,7 +1832,7 @@ __dfsw_fseeko64(FILE *stream, off64_t offset, int whence, dfsan_label stream_lab
   if (ret == 0 && taint_get_file(fd)) {
     taint_set_offset_label(offset_label);
     if (offset_label) {
-      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset),
+      dfsan_label sc = dfsan_union(offset_label, 0, (bveq << 8) | ICmp, sizeof(offset) * 8,
           0, offset);
       add_constraints(sc);
     }
