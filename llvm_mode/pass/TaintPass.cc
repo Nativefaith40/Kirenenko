@@ -144,6 +144,11 @@ static cl::opt<bool> ClTraceFP(
     cl::desc("Propagate taint for floating pointer instructions."),
     cl::Hidden, cl::init(false));
 
+static cl::opt<bool> ClTraceBound(
+    "taint-trace-bound",
+    cl::desc("Trace buffer bound info."),
+    cl::Hidden, cl::init(true));
+
 static StringRef GetGlobalTypeString(const GlobalValue &G) {
   // Types of GlobalVariables are always pointer types.
   Type *GType = G.getValueType();
@@ -333,6 +338,9 @@ class Taint : public ModulePass {
   FunctionType *TaintTraceCondFnTy;
   FunctionType *TaintTraceIndirectCallFnTy;
   FunctionType *TaintTraceGEPFnTy;
+  FunctionType *TaintPushStackFrameFnTy;
+  FunctionType *TaintPopStackFrameFnTy;
+  FunctionType *TaintTraceAllocaFnTy;
   FunctionType *TaintDebugFnTy;
   Constant *TaintUnionFn;
   Constant *TaintCheckedUnionFn;
@@ -346,6 +354,9 @@ class Taint : public ModulePass {
   Constant *TaintTraceCondFn;
   Constant *TaintTraceIndirectCallFn;
   Constant *TaintTraceGEPFn;
+  Constant *TaintPushStackFrameFn;
+  Constant *TaintPopStackFrameFn;
+  Constant *TaintTraceAllocaFn;
   Constant *TaintDebugFn;
   Constant *CallStack;
   MDNode *ColdCallWeights;
@@ -369,6 +380,7 @@ class Taint : public ModulePass {
   Constant *getOrBuildTrampolineFunction(FunctionType *FT, StringRef FName);
 
   void addContextRecording(Function &F);
+  void addFrameTracing(Function &F);
 
 public:
   static char ID;
@@ -435,6 +447,7 @@ struct TaintFunction {
   void visitSwitchInst(SwitchInst *I);
   void visitCondition(Value *Cond, Instruction *I);
   void visitGEPInst(GetElementPtrInst *I);
+  Value *visitAllocaInst(AllocaInst *I);
 };
 
 class TaintVisitor : public InstVisitor<TaintVisitor> {
@@ -589,6 +602,25 @@ void Taint::addContextRecording(Function &F) {
   }
 }
 
+void Taint::addFrameTracing(Function &F) {
+  BasicBlock *BB = &F.getEntryBlock();
+  assert(pred_begin(BB) == pred_end(BB) &&
+         "Assume that entry block has no predecessors");
+
+  IRBuilder<> IRB(&*(BB->getFirstInsertionPt()));
+  IRB.CreateCall(TaintPushStackFrameFn);
+
+  // Recover ctx at the end of a function
+  for (auto FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+    BasicBlock *BB = &*FI;
+    Instruction *Inst = BB->getTerminator();
+    if (isa<ReturnInst>(Inst) || isa<ResumeInst>(Inst)) {
+      IRB.SetInsertPoint(Inst);
+      IRB.CreateCall(TaintPopStackFrameFn);
+    }
+  }
+}
+
 bool Taint::doInitialization(Module &M) {
   Triple TargetTriple(M.getTargetTriple());
   bool IsX86_64 = TargetTriple.getArch() == Triple::x86_64;
@@ -650,6 +682,13 @@ bool Taint::doInitialization(Module &M) {
       Type::getVoidTy(*Ctx), { ShadowTy }, false);
   TaintTraceGEPFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), { ShadowTy, Int64Ty }, false);
+  TaintPushStackFrameFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), {}, false);
+  TaintPopStackFrameFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), {}, false);
+  Type *TaintTraceAllocaArgs[4] = { ShadowTy, Int64Ty, Int64Ty, Int64Ty };
+  TaintTraceAllocaFnTy = FunctionType::get(
+      ShadowTy, TaintTraceAllocaArgs, false);
 
   TaintDebugFnTy = FunctionType::get(Type::getVoidTy(*Ctx),
       {ShadowTy, ShadowTy, ShadowTy, ShadowTy, ShadowTy}, false);
@@ -858,6 +897,13 @@ bool Taint::runOnModule(Module &M) {
   TaintTraceGEPFn =
     Mod->getOrInsertFunction("__taint_trace_gep", TaintTraceGEPFnTy);
 
+  TaintPushStackFrameFn =
+    Mod->getOrInsertFunction("__taint_push_stack_frame", TaintPushStackFrameFnTy);
+  TaintPopStackFrameFn =
+    Mod->getOrInsertFunction("__taint_pop_stack_frame", TaintPopStackFrameFnTy);
+  TaintTraceAllocaFn =
+    Mod->getOrInsertFunction("__taint_trace_alloca", TaintTraceAllocaFnTy);
+
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
 
@@ -882,7 +928,10 @@ bool Taint::runOnModule(Module &M) {
         &i != TaintTraceIndirectCallFn &&
         &i != TaintTraceGEPFn &&
         &i != TaintDebugFn &&
-        &i != TaintUnionStoreFn) {
+        &i != TaintUnionStoreFn &&
+        &i != TaintPushStackFrameFn &&
+        &i != TaintPopStackFrameFn &&
+        &i != TaintTraceAllocaFn) {
       FnsToInstrument.push_back(&i);
     }
   }
@@ -1016,6 +1065,7 @@ bool Taint::runOnModule(Module &M) {
       continue;
 
     addContextRecording(*i);
+    addFrameTracing(*i);
     removeUnreachableBlocks(*i);
 
     TaintFunction TF(*this, i, FnsWithNativeABI.count(i));
@@ -1526,6 +1576,25 @@ void TaintVisitor::visitInsertValueInst(InsertValueInst &I) {
   //FIXME:
 }
 
+Value *TaintFunction::visitAllocaInst(AllocaInst *I) {
+  // insert after the instruction to get the address
+  BasicBlock::iterator ip(I);
+  IRBuilder<> IRB(I->getParent(), ++ip);
+  // get size
+  Value *Size = I->getArraySize();
+  Value *SizeShadow = getShadow(Size);
+  Size = IRB.CreateZExtOrTrunc(Size, TT.Int64Ty);
+  // get element size
+  Module *M = F->getParent();
+  auto &DL = M->getDataLayout();
+  uint64_t es = DL.getTypeAllocSizeInBits(I->getAllocatedType());
+  ConstantInt *ElemSize = ConstantInt::get(TT.Int64Ty, es);
+  // get address
+  Value *Address = IRB.CreatePtrToInt(I, TT.Int64Ty);
+
+  return IRB.CreateCall(TT.TaintTraceAllocaFn, {SizeShadow, Size, ElemSize, Address});
+}
+
 void TaintVisitor::visitAllocaInst(AllocaInst &I) {
   bool AllLoadsStores = true;
   for (User *U : I.users()) {
@@ -1546,7 +1615,14 @@ void TaintVisitor::visitAllocaInst(AllocaInst &I) {
     AllocaInst *AI = IRB.CreateAlloca(TF.TT.ShadowTy);
     TF.AllocaShadowMap[&I] = AI;
   }
-  TF.setShadow(&I, TF.TT.ZeroShadow);
+  Type *T = I.getAllocatedType();
+  bool isArray = I.isArrayAllocation() | T->isArrayTy();
+  if (!ClTraceBound || !isArray) {
+    TF.setShadow(&I, TF.TT.ZeroShadow);
+  } else {
+    Value *Bounds = TF.visitAllocaInst(&I);
+    TF.setShadow(&I, Bounds);
+  }
 }
 
 void TaintVisitor::visitSelectInst(SelectInst &I) {

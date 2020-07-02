@@ -140,16 +140,18 @@ enum operators {
   Not       = 1,
   Neg       = 2,
 #define HANDLE_BINARY_INST(num, opcode, Class) opcode = num,
+#define HANDLE_MEMORY_INST(num, opcode, Class) opcode = num,
 #define HANDLE_CAST_INST(num, opcode, Class) opcode = num,
 #define HANDLE_OTHER_INST(num, opcode, Class) opcode = num,
 #define LAST_OTHER_INST(num) last_llvm_op = num,
 #include "llvm/IR/Instruction.def"
 #undef HANDLE_BINARY_INST
+#undef HANDLE_MEMORY_INST
 #undef HANDLE_CAST_INST
 #undef HANDLE_OTHER_INST
 #undef LAST_OTHER_INST
   // self-defined
-  Load      = last_llvm_op + 3,
+  // Load      = last_llvm_op + 3,
   Extract   = last_llvm_op + 4,
   Concat    = last_llvm_op + 5,
   // higher-order

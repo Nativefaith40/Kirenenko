@@ -60,6 +60,12 @@ static const dfsan_label kInitializingLabel = -1;
 static atomic_dfsan_label __dfsan_last_label;
 static dfsan_label_info *__dfsan_label_info;
 
+// FIXME: single thread
+// statck bottom
+static dfsan_label __alloca_stack_bottom;
+static dfsan_label __alloca_stack_top;
+static std::vector<dfsan_label> __saved_alloca_stack_top;
+
 // taint source
 static struct taint_file tainted;
 
@@ -148,7 +154,7 @@ static void dfsan_check_label(dfsan_label label) {
   if (label == kInitializingLabel) {
     Report("FATAL: Taint: out of labels\n");
     Die();
-  } else if ((uptr)(&__dfsan_label_info[label]) >= HashTableAddr()) {
+  } else if (label >= __alloca_stack_top) {
     Report("FATAL: Exhausted labels\n");
     Die();
   }
@@ -206,6 +212,7 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u16 size,
   }
   if (l1 == 0 && l2 < CONST_OFFSET && op != fsize) return 0;
   if (l1 == kInitializingLabel || l2 == kInitializingLabel) return kInitializingLabel;
+  if (get_label_info(l1)->op == Alloca || get_label_info(l2)->op == Alloca) return 0;
 
   if (l1 >= CONST_OFFSET) op1 = 0;
   if (l2 >= CONST_OFFSET) op2 = 0;
@@ -419,6 +426,31 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
   for (uptr i = 0; i < n; ++i) {
     ls[i] = __taint_union(l, CONST_LABEL, Extract, 8, 0, i * 8);
   }
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+void __taint_push_stack_frame() {
+  __saved_alloca_stack_top.push_back(__alloca_stack_top);
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+void __taint_pop_stack_frame() {
+  __alloca_stack_top = __saved_alloca_stack_top.back();
+  __saved_alloca_stack_top.pop_back();
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+dfsan_label __taint_trace_alloca(dfsan_label l, u64 size, u64 elem_size, u64 base) {
+  __alloca_stack_top -= 1;
+  AOUT("label = %d, base = %p, size = %lld\n", __alloca_stack_top, base, size);
+  dfsan_label_info *info = get_label_info(__alloca_stack_top);
+  internal_memset(info, 0, sizeof(dfsan_label_info));
+  info->l2 = l;
+  info->op = Alloca;
+  info->op1 = base;
+  info->op2 = base + size * elem_size;
+
+  return __alloca_stack_top;
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
@@ -1257,6 +1289,9 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   __dfsan_label_info = (dfsan_label_info *)UnionTableAddr();
   // init const size
   __dfsan_label_info[CONST_LABEL].size = 8;
+  // init main thread
+  auto num_of_labels = (HashTableAddr() - UnionTableAddr()) / sizeof(dfsan_label_info);
+  __alloca_stack_top = __alloca_stack_bottom = (dfsan_label)(num_of_labels - 2);
 
   InitializeInterceptors();
 
