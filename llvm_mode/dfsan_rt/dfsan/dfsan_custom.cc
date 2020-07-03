@@ -61,7 +61,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_stat(const char *path, struct stat *buf, dfsan_label path_label,
             dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = stat(path, buf);
-  if (ret == 0) {
+  if (ret == 0 && is_taint_file(path)) {
     dfsan_set_label(0, buf, sizeof(struct stat));
     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
     dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
@@ -75,7 +75,7 @@ __dfsw___xstat(int vers, const char *path, struct stat *buf,
                dfsan_label vers_label, dfsan_label path_label,
                dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = __xstat(vers, path, buf);
-  if (ret == 0) {
+  if (ret == 0 && is_taint_file(path)) {
     dfsan_set_label(0, buf, sizeof(struct stat));
     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
     dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
@@ -89,7 +89,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int __dfsw_fstat(int fd, struct stat *buf,
                                                dfsan_label buf_label,
                                                dfsan_label *ret_label) {
   int ret = fstat(fd, buf);
-  if (ret == 0) {
+  if (ret == 0 && taint_get_file(fd)) {
     dfsan_set_label(0, buf, sizeof(struct stat));
     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
     dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
@@ -103,7 +103,7 @@ __dfsw___fxstat(int vers, const int fd, struct stat *buf,
                 dfsan_label vers_label, dfsan_label fd_label,
                 dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = __fxstat(vers, fd, buf);
-  if (ret == 0) {
+  if (ret == 0 && taint_get_file(fd)) {
     dfsan_set_label(0, buf, sizeof(struct stat));
     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
     dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
@@ -116,7 +116,7 @@ SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_lstat(const char *path, struct stat *buf, dfsan_label path_label,
              dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = lstat(path, buf);
-  if (ret == 0) {
+  if (ret == 0 && is_taint_file(path)) {
     dfsan_set_label(0, buf, sizeof(struct stat));
     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
     dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
@@ -130,7 +130,7 @@ __dfsw___lxstat(int vers, const char *path, struct stat *buf,
                 dfsan_label vers_label, dfsan_label path_label,
                 dfsan_label buf_label, dfsan_label *ret_label) {
   int ret = __lxstat(vers, path, buf);
-  if (ret == 0) {
+  if (ret == 0 && is_taint_file(path)) {
     dfsan_set_label(0, buf, sizeof(struct stat));
     dfsan_label size = dfsan_union(0, 0, fsize, sizeof(buf->st_size) * 8, 0, 0);
     dfsan_set_label(size, &buf->st_size, sizeof(buf->st_size));
