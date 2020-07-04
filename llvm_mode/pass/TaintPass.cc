@@ -341,6 +341,7 @@ class Taint : public ModulePass {
   FunctionType *TaintPushStackFrameFnTy;
   FunctionType *TaintPopStackFrameFnTy;
   FunctionType *TaintTraceAllocaFnTy;
+  FunctionType *TaintCheckBoundsFnTy;
   FunctionType *TaintDebugFnTy;
   Constant *TaintUnionFn;
   Constant *TaintCheckedUnionFn;
@@ -357,6 +358,7 @@ class Taint : public ModulePass {
   Constant *TaintPushStackFrameFn;
   Constant *TaintPopStackFrameFn;
   Constant *TaintTraceAllocaFn;
+  Constant *TaintCheckBoundsFn;
   Constant *TaintDebugFn;
   Constant *CallStack;
   MDNode *ColdCallWeights;
@@ -448,6 +450,7 @@ struct TaintFunction {
   void visitCondition(Value *Cond, Instruction *I);
   void visitGEPInst(GetElementPtrInst *I);
   Value *visitAllocaInst(AllocaInst *I);
+  void checkBounds(Value *Ptr, Instruction *Pos);
 };
 
 class TaintVisitor : public InstVisitor<TaintVisitor> {
@@ -689,6 +692,8 @@ bool Taint::doInitialization(Module &M) {
   Type *TaintTraceAllocaArgs[4] = { ShadowTy, Int64Ty, Int64Ty, Int64Ty };
   TaintTraceAllocaFnTy = FunctionType::get(
       ShadowTy, TaintTraceAllocaArgs, false);
+  TaintCheckBoundsFnTy = FunctionType::get(
+      Type::getVoidTy(*Ctx), { ShadowTy, Int64Ty }, false);
 
   TaintDebugFnTy = FunctionType::get(Type::getVoidTy(*Ctx),
       {ShadowTy, ShadowTy, ShadowTy, ShadowTy, ShadowTy}, false);
@@ -903,6 +908,8 @@ bool Taint::runOnModule(Module &M) {
     Mod->getOrInsertFunction("__taint_pop_stack_frame", TaintPopStackFrameFnTy);
   TaintTraceAllocaFn =
     Mod->getOrInsertFunction("__taint_trace_alloca", TaintTraceAllocaFnTy);
+  TaintCheckBoundsFn =
+    Mod->getOrInsertFunction("__taint_check_bounds", TaintCheckBoundsFnTy);
 
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
@@ -931,7 +938,8 @@ bool Taint::runOnModule(Module &M) {
         &i != TaintUnionStoreFn &&
         &i != TaintPushStackFrameFn &&
         &i != TaintPopStackFrameFn &&
-        &i != TaintTraceAllocaFn) {
+        &i != TaintTraceAllocaFn &&
+        &i != TaintCheckBoundsFn) {
       FnsToInstrument.push_back(&i);
     }
   }
@@ -1322,6 +1330,13 @@ Value *TaintFunction::combineCmpInstShadows(CmpInst *CI,
   return Shadow;
 }
 
+void TaintFunction::checkBounds(Value *Ptr, Instruction *Pos) {
+  IRBuilder<> IRB(Pos);
+  Value *PtrShadow = getShadow(Ptr);
+  Value *Addr = IRB.CreatePtrToInt(Ptr, TT.Int64Ty);
+  IRB.CreateCall(TT.TaintCheckBoundsFn, {PtrShadow, Addr});
+}
+
 // Generates IR to load shadow corresponding to bytes [Addr, Addr+Size), where
 // Addr has alignment Align, and take the union of each of those shadows.
 Value *TaintFunction::loadShadow(Value *Addr, uint64_t Size, uint64_t Align,
@@ -1388,6 +1403,8 @@ void TaintVisitor::visitLoadInst(LoadInst &LI) {
 #endif
   if (Shadow != TF.TT.ZeroShadow)
     TF.NonZeroChecks.push_back(Shadow);
+  if (ClTraceBound)
+    TF.checkBounds(LI.getPointerOperand(), &LI);
 
   TF.setShadow(&LI, Shadow);
 }
@@ -1445,6 +1462,8 @@ void TaintVisitor::visitStoreInst(StoreInst &SI) {
   }
 #endif
   TF.storeShadow(SI.getPointerOperand(), Size, Align, Shadow, &SI);
+  if (ClTraceBound)
+    TF.checkBounds(SI.getPointerOperand(), &SI);
 }
 
 void TaintVisitor::visitBinaryOperator(BinaryOperator &BO) {
@@ -1548,13 +1567,15 @@ void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
       IRB.CreateCall(TT.TaintTraceGEPFn, {Shadow, Index});
     }
   }
-  // propagate bounds info
-  Value *Bounds = getShadow(I->getPointerOperand());
-  setShadow(I, Bounds);
+  if (ClTraceBound) {
+    // propagate bounds info
+    Value *Bounds = getShadow(I->getPointerOperand());
+    setShadow(I, Bounds);
+  }
 }
 
 void TaintVisitor::visitGetElementPtrInst(GetElementPtrInst &GEPI) {
-  if (!ClTraceGEPOffset) return;
+  if (!ClTraceGEPOffset && !ClTraceBound) return;
   if (GEPI.getMetadata("nosanitize")) return;
   TF.visitGEPInst(&GEPI);
 }
@@ -1590,7 +1611,7 @@ Value *TaintFunction::visitAllocaInst(AllocaInst *I) {
   // get element size
   Module *M = F->getParent();
   auto &DL = M->getDataLayout();
-  uint64_t es = DL.getTypeAllocSizeInBits(I->getAllocatedType());
+  uint64_t es = DL.getTypeAllocSize(I->getAllocatedType());
   ConstantInt *ElemSize = ConstantInt::get(TT.Int64Ty, es);
   // get address
   Value *Address = IRB.CreatePtrToInt(I, TT.Int64Ty);

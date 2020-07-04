@@ -454,7 +454,8 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_trace_alloca(dfsan_label l, u64 size, u64 elem_size, u64 base) {
   if (flags().trace_bounds) {
     __alloca_stack_top -= 1;
-    AOUT("label = %d, base = %p, size = %lld\n", __alloca_stack_top, base, size);
+    AOUT("label = %d, base = %p, size = %lld, elem_size = %lld\n",
+        __alloca_stack_top, base, size, elem_size);
     dfsan_label_info *info = get_label_info(__alloca_stack_top);
     internal_memset(info, 0, sizeof(dfsan_label_info));
     info->l2 = l;
@@ -466,6 +467,24 @@ dfsan_label __taint_trace_alloca(dfsan_label l, u64 size, u64 elem_size, u64 bas
     return __alloca_stack_top;
   } else {
     return 0;
+  }
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+void __taint_check_bounds(dfsan_label l, uptr addr) {
+  if (flags().trace_bounds) {
+    dfsan_label_info *info = get_label_info(l);
+    if (info->op == Free) {
+      // UAF
+      AOUT("ERROR: UAF detected %p = %d @%p\n", addr, l, __builtin_return_address(0));
+    } else if (info->op == Alloca) {
+      AOUT("addr = %p, lower = %p, upper = %p\n", addr, info->op1, info->op2);
+      if (addr < info->op1 || addr >= info->op2) {
+        AOUT("ERROR: Out-of-bound memory access %p = %d @%p\n", addr, l, __builtin_return_address(0));
+      }
+    } else {
+      AOUT("WARNING: incorrect label %p = %d @%p\n", addr, l, __builtin_return_address(0));
+    }
   }
 }
 
