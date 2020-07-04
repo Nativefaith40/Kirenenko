@@ -283,27 +283,6 @@ __dfsw_strncasecmp(const char *s1, const char *s2, size_t n,
   */
 }
 
-SANITIZER_INTERFACE_ATTRIBUTE void *__dfsw_calloc(size_t nmemb, size_t size,
-                                                  dfsan_label nmemb_label,
-                                                  dfsan_label size_label,
-                                                  dfsan_label *ret_label) {
-  void *p = calloc(nmemb, size);
-  dfsan_set_label(0, p, nmemb * size);
-  *ret_label = 0;
-  return p;
-}
-
-SANITIZER_INTERFACE_ATTRIBUTE
-void *__dfsw___libc_calloc(size_t nmemb, size_t size,
-                           dfsan_label nmemb_label,
-                           dfsan_label size_label,
-                           dfsan_label *ret_label) {
-  void *p = calloc(nmemb, size);
-  dfsan_set_label(0, p, nmemb * size);
-  *ret_label = 0;
-  return p;
-}
-
 SANITIZER_INTERFACE_ATTRIBUTE size_t
 __dfsw_strlen(const char *s, dfsan_label s_label, dfsan_label *ret_label) {
   size_t ret = strlen(s);
@@ -1593,15 +1572,43 @@ SANITIZER_INTERFACE_ATTRIBUTE void *
 __dfsw_realloc(void *ptr, size_t new_size,
                dfsan_label ptr_label, dfsan_label new_size_label,
                dfsan_label *ret_label) {
-  size_t size = malloc_usable_size(ptr);
-  if (size > new_size) size = new_size;
-  void *ret = realloc(ptr, new_size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
-  internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
-  if (ret != ptr) {
-    internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
-    *ret_label = 0;
-  } else *ret_label = ptr_label;
+  void *ret = malloc(new_size);
+  *ret_label = 0;
+
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, new_size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + new_size);
+      *ret_label = bound;
+    }
+  }
+
+  if (ptr) {
+    if (ret) {
+      // copy old labels
+      size_t size = malloc_usable_size(ptr);
+      size = size < new_size ? size : new_size;
+      internal_memcpy(ret, ptr, size);
+      internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+    }
+    if (flags().trace_bounds) {
+      // mark old buffer as freed without truely free it
+      dfsan_label_info *info = dfsan_get_label_info(ptr_label);
+      if (info->op != Alloca) {
+        AOUT("WARNING: wrong ptr op %d = %d\n", ptr_label, info->op);
+        // Die();
+      } else info->op = Free;
+    } else {
+      free(ptr);
+    }
+  }
+
+  if (flags().trace_bounds) {
+    AOUT("old ptr: %p = %d, new size: %d = %d, new ptr: %p = %d\n", ptr, ptr_label,
+        new_size, new_size_label, ret, *ret_label);
+  }
+
   return ret;
 }
 
@@ -1609,26 +1616,182 @@ SANITIZER_INTERFACE_ATTRIBUTE void *
 __dfsw___libc_realloc(void *ptr, size_t new_size,
                       dfsan_label ptr_label, dfsan_label new_size_label,
                       dfsan_label *ret_label) {
-  size_t size = malloc_usable_size(ptr);
-  if (size > new_size) size = new_size;
-  void *ret = realloc(ptr, new_size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
-  internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
-  if (ret != ptr) {
-    internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
-    *ret_label = 0;
-  } else *ret_label = ptr_label;
+  void *ret = malloc(new_size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, new_size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + new_size);
+      *ret_label = bound;
+    }
+  }
+
+  if (ptr) {
+    if (ret) {
+      // copy old labels
+      size_t size = malloc_usable_size(ptr);
+      size = size < new_size ? size : new_size;
+      internal_memcpy(ret, ptr, size);
+      internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+    }
+    if (flags().trace_bounds) {
+      // mark old buffer as freed without truely free it
+      dfsan_label_info *info = dfsan_get_label_info(ptr_label);
+      if (info->op != Alloca) {
+        AOUT("WARNING: wrong ptr op %d = %d\n", ptr_label, info->op);
+        // Die();
+      } else info->op = Free;
+    } else {
+      free(ptr);
+    }
+  }
+
+  if (flags().trace_bounds) {
+    AOUT("old ptr: %p = %d, new size: %d = %d, new ptr: %p = %d\n", ptr, ptr_label,
+        new_size, new_size_label, ret, *ret_label);
+  }
+
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_reallocarray(void *ptr, size_t nmemb, size_t new_size,
+                          dfsan_label ptr_label, dfsan_label nmemb_label,
+                          dfsan_label new_size_label, dfsan_label *ret_label) {
+  void *ret = calloc(nmemb, new_size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size * nmemb);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(nmemb_label, new_size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + (new_size * nmemb));
+      *ret_label = bound;
+    }
+  }
+
+  if (ptr) {
+    if (ret) {
+      // copy old labels
+      size_t size = malloc_usable_size(ptr);
+      size = size < new_size ? size : new_size * nmemb;
+      internal_memcpy(ret, ptr, size);
+      internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+    }
+    if (flags().trace_bounds) {
+      // mark old buffer as freed without truely free it
+      dfsan_label_info *info = dfsan_get_label_info(ptr_label);
+      if (info->op != Alloca) {
+        AOUT("WARNING: wrong ptr op %d = %d\n", ptr_label, info->op);
+        // Die();
+      } else info->op = Free;
+    } else {
+      free(ptr);
+    }
+  }
+
+  if (flags().trace_bounds) {
+    AOUT("old ptr: %p = %d, new size: %d = %d, new ptr: %p = %d\n", ptr, ptr_label,
+        new_size, new_size_label, ret, *ret_label);
+  }
+
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw___libc_reallocarray(void *ptr, size_t nmemb, size_t new_size,
+                                 dfsan_label ptr_label, dfsan_label nmemb_label,
+                                 dfsan_label new_size_label, dfsan_label *ret_label) {
+  void *ret = calloc(nmemb, new_size);
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size * nmemb);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(nmemb_label, new_size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + (new_size * nmemb));
+      *ret_label = bound;
+    }
+  }
+
+  if (ptr) {
+    if (ret) {
+      // copy old labels
+      size_t size = malloc_usable_size(ptr);
+      size = size < new_size ? size : new_size * nmemb;
+      internal_memcpy(ret, ptr, size);
+      internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+    }
+    if (flags().trace_bounds) {
+      // mark old buffer as freed without truely free it
+      dfsan_label_info *info = dfsan_get_label_info(ptr_label);
+      if (info->op != Alloca) {
+        AOUT("WARNING: wrong ptr op %d = %d\n", ptr_label, info->op);
+        // Die();
+      } else info->op = Free;
+    } else {
+      free(ptr);
+    }
+  }
+
+  if (flags().trace_bounds) {
+    AOUT("old ptr: %p = %d, nmemb: %lld = %d, new size: %lld = %d, new ptr: %p = %d\n",
+        ptr, ptr_label, nmemb, nmemb_label, new_size, new_size_label, ret, *ret_label);
+  }
+
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_calloc(size_t nmemb, size_t size,
+                    dfsan_label nmemb_label, dfsan_label size_label,
+                    dfsan_label *ret_label) {
+  void *ret = calloc(nmemb, size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size * nmemb);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(nmemb_label, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + (size * nmemb));
+      *ret_label = bound;
+      AOUT("nmemb: %lld = %d, size: %lld = %d, addr: %p = %d\n", nmemb, nmemb_label,
+          size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw___libc_calloc(size_t nmemb, size_t size,
+                           dfsan_label nmemb_label, dfsan_label size_label,
+                           dfsan_label *ret_label) {
+  void *ret = calloc(nmemb, size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size * nmemb);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(nmemb_label, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + (size * nmemb));
+      *ret_label = bound;
+      AOUT("nmemb: %lld = %d, size: %lld = %d, addr: %p = %d\n", nmemb, nmemb_label,
+          size, size_label, ret, *ret_label);
+    }
+  }
   return ret;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
 void *__dfsw_malloc(size_t size, dfsan_label size_label,
                    dfsan_label *ret_label) {
-  if (size_label)
-    AOUT("malloc with tainted length: %d = %lld\n", size_label, size);
   void *ret = malloc(size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
   *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
   return ret;
 }
 
@@ -1636,22 +1799,182 @@ SANITIZER_INTERFACE_ATTRIBUTE
 void *__dfsw___libc_malloc(size_t size, dfsan_label size_label,
                            dfsan_label *ret_label) {
   void *ret = malloc(size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
   *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_aligned_alloc(size_t alignment, size_t size,
+                           dfsan_label alignment_label, dfsan_label size_label,
+                           dfsan_label *ret_label) {
+  void *ret = aligned_alloc(alignment, size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+int __dfsw_posix_memalign(void **memptr, size_t alignment, size_t size,
+                          dfsan_label memptr_label, dfsan_label alignment_label,
+                          dfsan_label size_label, dfsan_label *ret_label) {
+  int ret = posix_memalign(memptr, alignment, size);
+  *ret_label = 0;
+  if (!ret && memptr && *memptr) {
+    internal_memset(shadow_for(*memptr), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(*memptr) * 8,
+          (u64)(*memptr), (u64)(*memptr) + size);
+      dfsan_set_label(bound, memptr, sizeof(*memptr));
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, *memptr, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_valloc(size_t size, dfsan_label size_label, dfsan_label *ret_label) {
+  void *ret = valloc(size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw___libc_valloc(size_t size, dfsan_label size_label, dfsan_label *ret_label) {
+  void *ret = valloc(size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_memalign(size_t alignment, size_t size, dfsan_label alignment_label,
+                      dfsan_label size_label, dfsan_label *ret_label) {
+  void *ret = memalign(alignment, size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw___libc_memalign(size_t alignment, size_t size, dfsan_label alignment_label,
+                             dfsan_label size_label, dfsan_label *ret_label) {
+  void *ret = memalign(alignment, size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_pvalloc(size_t size, dfsan_label size_label, dfsan_label *ret_label) {
+  void *ret = pvalloc(size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw___libc_pvalloc(size_t size, dfsan_label size_label, dfsan_label *ret_label) {
+  void *ret = pvalloc(size);
+  *ret_label = 0;
+  if (ret) {
+    internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+    if (flags().trace_bounds) {
+      dfsan_label bound = dfsan_union(0, size_label, Alloca, sizeof(ret) * 8,
+          (u64)ret, (u64)ret + size);
+      *ret_label = bound;
+      AOUT("length: %lld = %d, addr: %p = %d\n", size, size_label, ret, *ret_label);
+    }
+  }
   return ret;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE void __dfsw_free(void *ptr, dfsan_label ptr_label) {
-  size_t size = malloc_usable_size(ptr);
-  free(ptr);
-  internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
+  if (ptr && flags().trace_bounds) {
+    // don't really free, a hacky way to avoid reusing the address
+    // just mark as freed
+    AOUT("addr: %p = %d\n", ptr, ptr_label);
+    dfsan_label_info *info = dfsan_get_label_info(ptr_label);
+    if (info->op != Alloca) {
+      AOUT("WARNING: wrong ptr op %d = %d @%p\n", ptr_label, info->op, __builtin_return_address(0));
+      // Die();
+    } else info->op = Free;
+  } else {
+    free(ptr);
+  }
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
 void __dfsw___libc_free(void *ptr, dfsan_label ptr_label) {
-  size_t size = malloc_usable_size(ptr);
-  free(ptr);
-  internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
+  if (ptr && flags().trace_bounds) {
+    // don't really free, a hacky way to avoid reusing the address
+    // just mark as freed
+    AOUT("addr: %p = %d\n", ptr, ptr_label);
+    dfsan_label_info *info = dfsan_get_label_info(ptr_label);
+    if (info->op != Alloca) {
+      AOUT("WARNING: wrong ptr op %d = %d\n", ptr_label, info->op);
+      // Die();
+    } else info->op = Free;
+  } else {
+    free(ptr);
+  }
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE int

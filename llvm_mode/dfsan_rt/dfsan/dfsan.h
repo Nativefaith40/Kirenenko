@@ -83,6 +83,7 @@ dfsan_label dfsan_union(dfsan_label l1, dfsan_label l2, u16 op, u8 size,
                         u64 op1, u64 op2);
 dfsan_label dfsan_create_label(off_t offset);
 dfsan_label dfsan_get_label(const void *addr);
+dfsan_label_info* dfsan_get_label_info(dfsan_label label);
 
 // taint source
 void taint_set_file(const char *filename, int fd);
@@ -100,6 +101,7 @@ int is_utmp_taint(void);
 
 // additional constraints
 void add_constraints(dfsan_label label);
+
 }  // extern "C"
 
 template <typename T>
@@ -151,7 +153,7 @@ enum operators {
 #undef HANDLE_OTHER_INST
 #undef LAST_OTHER_INST
   // self-defined
-  // Load      = last_llvm_op + 3,
+  Free      = last_llvm_op + 3,
   Extract   = last_llvm_op + 4,
   Concat    = last_llvm_op + 5,
   // higher-order

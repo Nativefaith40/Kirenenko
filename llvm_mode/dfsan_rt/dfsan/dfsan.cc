@@ -210,9 +210,16 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u16 size,
     Swap(l1, l2);
     Swap(op1, op2);
   }
-  if (l1 == 0 && l2 < CONST_OFFSET && op != fsize) return 0;
+  if (l1 == 0 && l2 < CONST_OFFSET && op != fsize && op != Alloca) return 0;
   if (l1 == kInitializingLabel || l2 == kInitializingLabel) return kInitializingLabel;
-  if (get_label_info(l1)->op == Alloca || get_label_info(l2)->op == Alloca) return 0;
+
+  // special handling for bounds
+  if (get_label_info(l1)->op == Alloca || get_label_info(l2)->op == Alloca) {
+    // propagate if it's casting op
+    if (op == BitCast) return l1;
+    if (op == PtrToInt) {AOUT("WARNING: ptrtoint %d\n", l1); return 0;}
+    if (op != Extract) return 0;
+  }
 
   if (l1 >= CONST_OFFSET) op1 = 0;
   if (l2 >= CONST_OFFSET) op2 = 0;
@@ -260,23 +267,23 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
   // assert(label0 <= l);
   if (label0 >= CONST_OFFSET) assert(get_label_info(label0)->size != 0);
 
-  // fast path 1: constant
-  if (is_constant_label(label0)) {
-    bool constant = true;
+  // fast path 1: constant and bounds
+  if (is_constant_label(label0) || is_kind_of_label(label0, Alloca)) {
+    bool same = true;
     for (uptr i = 1; i < n; i++) {
-      if (!is_constant_label(ls[i])) {
-        constant = false;
+      if (ls[i] != label0) {
+        same = false;
         break;
       }
     }
-    if (constant) return CONST_LABEL;
+    if (same) return label0;
   }
   AOUT("label0 = %d, n = %d, ls = %p\n", label0, n, ls);
 
   // shape
   bool shape = true;
   uptr shape_ext = 0;
-  if (__dfsan_label_info[label0].op != 0) {
+  if (get_label_info(label0)->op != 0) {
     // not raw input bytes
     shape = false;
   } else {
@@ -371,8 +378,8 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
     return;
   }
 
-  // fast path 1: constant
-  if (l == 0) {
+  // fast path 1: constant and bounds
+  if (l == 0 || is_kind_of_label(l, Alloca)) {
     for (uptr i = 0; i < n; ++i)
       ls[i] = l;
     return;
@@ -430,27 +437,36 @@ void __taint_union_store(dfsan_label l, dfsan_label *ls, uptr n) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 void __taint_push_stack_frame() {
-  __saved_alloca_stack_top.push_back(__alloca_stack_top);
+  if (flags().trace_bounds) {
+    __saved_alloca_stack_top.push_back(__alloca_stack_top);
+  }
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 void __taint_pop_stack_frame() {
-  __alloca_stack_top = __saved_alloca_stack_top.back();
-  __saved_alloca_stack_top.pop_back();
+  if (flags().trace_bounds) {
+    __alloca_stack_top = __saved_alloca_stack_top.back();
+    __saved_alloca_stack_top.pop_back();
+  }
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_trace_alloca(dfsan_label l, u64 size, u64 elem_size, u64 base) {
-  __alloca_stack_top -= 1;
-  AOUT("label = %d, base = %p, size = %lld\n", __alloca_stack_top, base, size);
-  dfsan_label_info *info = get_label_info(__alloca_stack_top);
-  internal_memset(info, 0, sizeof(dfsan_label_info));
-  info->l2 = l;
-  info->op = Alloca;
-  info->op1 = base;
-  info->op2 = base + size * elem_size;
+  if (flags().trace_bounds) {
+    __alloca_stack_top -= 1;
+    AOUT("label = %d, base = %p, size = %lld\n", __alloca_stack_top, base, size);
+    dfsan_label_info *info = get_label_info(__alloca_stack_top);
+    internal_memset(info, 0, sizeof(dfsan_label_info));
+    info->l2 = l;
+    info->op = Alloca;
+    info->size = sizeof(void*) * 8;
+    info->op1 = base;
+    info->op2 = base + size * elem_size;
 
-  return __alloca_stack_top;
+    return __alloca_stack_top;
+  } else {
+    return 0;
+  }
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
@@ -556,7 +572,8 @@ dfsan_get_label(const void *addr) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
-const struct dfsan_label_info *dfsan_get_label_info(dfsan_label label) {
+dfsan_label_info *dfsan_get_label_info(dfsan_label label) {
+  dfsan_check_label(label);
   return &__dfsan_label_info[label];
 }
 
