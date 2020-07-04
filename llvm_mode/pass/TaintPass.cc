@@ -683,8 +683,10 @@ bool Taint::doInitialization(Module &M) {
       Type::getVoidTy(*Ctx), TaintTraceCondArgs, false);
   TaintTraceIndirectCallFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), { ShadowTy }, false);
+  Type *TaintTraceGEPArgs[7] = { ShadowTy, Int64Ty, ShadowTy, Int64Ty, Int64Ty,
+      Int64Ty, Int64Ty };
   TaintTraceGEPFnTy = FunctionType::get(
-      Type::getVoidTy(*Ctx), { ShadowTy, Int64Ty }, false);
+      Type::getVoidTy(*Ctx), TaintTraceGEPArgs, false);
   TaintPushStackFrameFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), {}, false);
   TaintPopStackFrameFnTy = FunctionType::get(
@@ -1543,28 +1545,52 @@ void TaintVisitor::visitSwitchInst(SwitchInst &SWI) {
 }
 
 void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
+  Module *M = F->getParent();
+  auto &DL = M->getDataLayout();
+  int64_t CurrentOffset = 0;
+
   IRBuilder<> IRB(I);
-  Type *ET = I->getPointerOperandType();
-  for (auto &idx: I->indices()) {
-    Value *Index = &*idx;
-    CompositeType *CT = dyn_cast<CompositeType>(ET);
-    if (!CT) {
-      // at least pointer type?
-      if (PointerType *PT = dyn_cast<PointerType>(ET)) {
-        ET = PT->getElementType();
-        continue;
+  Type *ETy = I->getPointerOperandType();
+  for (auto &Idx: I->indices()) {
+    // reference: DataLayout::getIndexedOffsetInType
+    Value *Index = &*Idx;
+    if (StructType *STy = dyn_cast<StructType>(ETy)) {
+      // index into struct has to be constant
+      assert(isa<ConstantInt>(Index) && "inllegal struct index");
+      unsigned FieldNo = cast<ConstantInt>(Index)->getZExtValue();
+      const StructLayout *SL = DL.getStructLayout(STy);
+      CurrentOffset += SL->getElementOffset(FieldNo);
+      ETy = STy->getTypeAtIndex(FieldNo);
+    } else {
+      uint64_t NumElements = 0;
+      if (PointerType *PTy = dyn_cast<PointerType>(ETy)) {
+        ETy = PTy->getElementType();
+      } else if (ArrayType *ATy = dyn_cast<ArrayType>(ETy)) {
+        ETy = ATy->getElementType();
+        NumElements = ATy->getNumElements();
       } else {
+        // FIXME: vector type?
         break;
       }
-    }
-    ET = CT->getTypeAtIndex(Index);
-    if (isa<Constant>(Index)) continue;
-    if (!CT->isArrayTy()) continue; // only care about array?
 
-    Value *Shadow = getShadow(Index);
-    if (Shadow != TT.ZeroShadow) {
-      Index = IRB.CreateZExtOrTrunc(Index, TT.Int64Ty);
-      IRB.CreateCall(TT.TaintTraceGEPFn, {Shadow, Index});
+      if (isa<ConstantInt>(Index)) {
+        int64_t arrayIdx = cast<ConstantInt>(Index)->getSExtValue();
+        CurrentOffset += arrayIdx * DL.getTypeAllocSize(ETy);
+      } else {
+        // non-constant index, check if it's tainted
+        Value *Shadow = getShadow(Index);
+        if (Shadow != TT.ZeroShadow) {
+          Index = IRB.CreateZExtOrTrunc(Index, TT.Int64Ty);
+          ConstantInt *Offset = ConstantInt::get(TT.Int64Ty, CurrentOffset);
+          ConstantInt *ES = ConstantInt::get(TT.Int64Ty, DL.getTypeAllocSize(ETy));
+          ConstantInt *NE = ConstantInt::get(TT.Int64Ty, NumElements);
+          Value *Ptr = IRB.CreatePtrToInt(I->getPointerOperand(), TT.Int64Ty);
+          Value *Bounds = getShadow(I->getPointerOperand());
+          IRB.CreateCall(TT.TaintTraceGEPFn, {Bounds, Ptr, Shadow, Index, NE, ES, Offset});
+        } else {
+          break;
+        }
+      }
     }
   }
   if (ClTraceBound) {

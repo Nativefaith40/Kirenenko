@@ -480,7 +480,7 @@ void __taint_check_bounds(dfsan_label l, uptr addr) {
     } else if (info->op == Alloca) {
       AOUT("addr = %p, lower = %p, upper = %p\n", addr, info->op1, info->op2);
       if (addr < info->op1 || addr >= info->op2) {
-        AOUT("ERROR: Out-of-bound memory access %p = %d @%p\n", addr, l, __builtin_return_address(0));
+        AOUT("ERROR: OOB detected %p = %d @%p\n", addr, l, __builtin_return_address(0));
       }
     } else {
       AOUT("WARNING: incorrect label %p = %d @%p\n", addr, l, __builtin_return_address(0));
@@ -1038,71 +1038,157 @@ __taint_trace_indcall(dfsan_label label) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_gep(dfsan_label label, u64 r) {
-  if (label == 0)
+__taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, int64_t index,
+                  uint64_t num_elems, int64_t elem_size, int64_t current_offset) {
+  if (index_label == 0)
     return;
 
-  if ((get_label_info(label)->flags & B_FLIPPED))
+  if ((get_label_info(index_label)->flags & B_FLIPPED))
     return;
 
-  AOUT("tainted GEP index: %d = %lld\n", label, r);
-  return;
+  AOUT("tainted GEP index: %lld = %d, ne: %lld, es: %lld, offset: %lld\n",
+      index, index_label, num_elems, elem_size, current_offset);
 
-  bool pushed = false;
-  u8 size = get_label_info(label)->size;
+  void *addr = __builtin_return_address(0);
+  u8 size = get_label_info(index_label)->size;
   try {
     std::unordered_set<dfsan_label> inputs;
-    z3::expr index = serialize(label, inputs);
-    z3::expr result = __z3_context.bv_val((uint64_t)r, size);
+    z3::expr i = serialize(index_label, inputs);
+    z3::expr r = __z3_context.bv_val(index, size);
 
-    __z3_solver.reset();
-    // add dependencies
-    branch_dep_t added;
-    for (auto off : inputs) {
-      auto c = __branch_deps->at(off);
-      if (c) {
-        for (auto &expr : *c) {
-          if (added.insert(expr).second) {
-            __z3_solver.add(expr);
+    // solve bound constraints
+    dfsan_label_info *bounds = get_label_info(ptr_label);
+    if (flags().trace_bounds) {
+      __z3_solver.reset();
+      // add dependencies
+      branch_dep_t added;
+      for (auto off : inputs) {
+        auto c = __branch_deps->at(off);
+        if (c) {
+          for (auto &expr : *c) {
+            if (added.insert(expr).second) {
+              __z3_solver.add(expr);
+            }
           }
         }
       }
-    }
-    __z3_solver.add(index > result);
-    z3::check_result res = __z3_solver.check();
 
-    //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-    if (res == z3::sat) {
-      AOUT("\tindex > %lld solved\n", r);
-      z3::model m = __z3_solver.get_model();
-      generate_input(m);
-    } else if (res == z3::unsat) {
-      AOUT("\tindex > %lld not possible\n", r);
+      // first, check against fixed array bounds if available
+      if (num_elems > 0) {
+        z3::expr ne = __z3_context.bv_val(num_elems, 64);
+        __z3_solver.push();
+        __z3_solver.add(z3::uge(z3::zext(i, 64 - size), ne));
+        z3::check_result res = __z3_solver.check();
+        if (res == z3::sat) {
+          AOUT("\tindex >= %lld solved @%p\n", num_elems, addr);
+          z3::model m = __z3_solver.get_model();
+          generate_input(m);
+        } else if (res == z3::unsat) {
+          AOUT("\tindex >= %lld not possible\n", num_elems);
 
-      // optimistic?
-#if OPTIMISTIC
-      z3::solver solver = z3::solver(__z3_context, "QF_BV");
-      solver.set("timeout", 5000U);
-      solver.add(index > result);
-      if (solver.check() == z3::sat) {
-        z3::model m = solver.get_model();
-        generate_input(m);
+          // optimistic?
+        #if 0 //OPTIMISTIC
+          z3::solver solver = z3::solver(__z3_context, "QF_BV");
+          solver.set("timeout", 5000U);
+          solver.add(z3::uge(z3::zext(i, 64 - size), ne));
+          if (solver.check() == z3::sat) {
+            z3::model m = solver.get_model();
+            generate_input(m);
+          }
+        #endif
+        }
+        __z3_solver.pop();
+
+        __z3_solver.add(i < 0);
+        res = __z3_solver.check();
+        if (res == z3::sat) {
+          AOUT("\tindex < 0 solved @%p\n", addr);
+          z3::model m = __z3_solver.get_model();
+          generate_input(m);
+        } else if (res == z3::unsat) {
+          AOUT("\tindex < 0 not possible\n");
+
+          // optimistic?
+        #if 0 //OPTIMISTIC
+          z3::solver solver = z3::solver(__z3_context, "QF_BV");
+          solver.set("timeout", 5000U);
+          solver.add(i < 0);
+          if (solver.check() == z3::sat) {
+            z3::model m = solver.get_model();
+            generate_input(m);
+          }
+        #endif
+        }
       }
-#endif
+      // if the array is not with fixed size, check bound info
+      else if (bounds->op == Alloca) {
+        z3::expr es = __z3_context.bv_val(elem_size, 64);
+        z3::expr co = __z3_context.bv_val(current_offset, 64);
+        z3::expr p = __z3_context.bv_val(ptr, 64);
+        z3::expr np = z3::sext(i, 64 - size) * es + co + p;
+        z3::expr lb = __z3_context.bv_val((uint64_t)bounds->op1, 64);
+        z3::expr ub = __z3_context.bv_val((uint64_t)bounds->op2, 64);
+
+        // check upper bound
+        __z3_solver.push();
+        __z3_solver.add(uge(np, ub));
+        z3::check_result res = __z3_solver.check();
+        if (res == z3::sat) {
+          AOUT("\tptr >= %p solved @%p\n", bounds->op2, addr);
+          z3::model m = __z3_solver.get_model();
+          generate_input(m);
+        } else if (res == z3::unsat) {
+          AOUT("\tptr >= %p not possible\n", bounds->op2);
+
+          // optimistic?
+        #if 0//OPTIMISTIC
+          z3::solver solver = z3::solver(__z3_context, "QF_BV");
+          solver.set("timeout", 5000U);
+          solver.add(uge(np, ub));
+          if (solver.check() == z3::sat) {
+            z3::model m = solver.get_model();
+            generate_input(m);
+          }
+        #endif
+        }
+        __z3_solver.pop();
+
+        // check lower bound
+        __z3_solver.add(ult(np, lb));
+        res = __z3_solver.check();
+        if (res == z3::sat) {
+          AOUT("\tptr < %p solved @%p\n", bounds->op1, addr);
+          z3::model m = __z3_solver.get_model();
+          generate_input(m);
+        } else if (res == z3::unsat) {
+          AOUT("\tptr < %p not possible\n", bounds->op1);
+
+          // optimistic?
+        #if 0//OPTIMISTIC
+          z3::solver solver = z3::solver(__z3_context, "QF_BV");
+          solver.set("timeout", 5000U);
+          solver.add(ult(np, lb));
+          if (solver.check() == z3::sat) {
+            z3::model m = solver.get_model();
+            generate_input(m);
+          }
+        #endif
+        }
+      }
     }
 
-    // preserve
+    // always preserve
     for (auto off : inputs) {
       auto c = __branch_deps->at(off);
       if (c == nullptr) {
         c = new branch_dep_t();
         __branch_deps->at(off) = c;
       }
-      c->insert(index == result);
+      c->insert(i == r);
     }
 
     // mark as visited
-    get_label_info(label)->flags |= B_FLIPPED;
+    get_label_info(index_label)->flags |= B_FLIPPED;
   } catch (z3::exception e) {
     Report("WARNING: index solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
   }
