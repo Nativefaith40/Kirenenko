@@ -1,9 +1,8 @@
 //===-- dfsan.cc ----------------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -19,14 +18,14 @@
 // prefixed __dfsan_.
 //===----------------------------------------------------------------------===//
 
-#include "../sanitizer_common/sanitizer_atomic.h"
-#include "../sanitizer_common/sanitizer_common.h"
-#include "../sanitizer_common/sanitizer_file.h"
-#include "../sanitizer_common/sanitizer_flags.h"
-#include "../sanitizer_common/sanitizer_flag_parser.h"
-#include "../sanitizer_common/sanitizer_libc.h"
-#include "../sanitizer_common/sanitizer_mutex.h"
-#include "../sanitizer_common/sanitizer_posix.h"
+#include "sanitizer_common/sanitizer_atomic.h"
+#include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_file.h"
+#include "sanitizer_common/sanitizer_flags.h"
+#include "sanitizer_common/sanitizer_flag_parser.h"
+#include "sanitizer_common/sanitizer_libc.h"
+#include "sanitizer_common/sanitizer_mutex.h"
+#include "sanitizer_common/sanitizer_posix.h"
 
 #include "dfsan.h"
 #include "taint_allocator.h"
@@ -1406,7 +1405,7 @@ static void dfsan_fini() {
 static void dfsan_init(int argc, char **argv, char **envp) {
   InitializeFlags();
 
-  InitializePlatformEarly();
+  ::InitializePlatformEarly();
   MmapFixedNoReserve(ShadowAddr(), UnusedAddr() - ShadowAddr());
   __dfsan_label_info = (dfsan_label_info *)UnionTableAddr();
   // init const size

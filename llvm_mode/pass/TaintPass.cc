@@ -1,9 +1,8 @@
 //===- Taint.cpp - dynamic taint analysis --------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -29,7 +28,7 @@
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/CallSite.h"
+//#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -53,16 +52,18 @@
 #include "llvm/IR/Type.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SpecialCaseList.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/Transforms/Utils/ModuleUtils.h"
+//#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -203,18 +204,20 @@ class TaintABIList {
 /// function type into another.  This struct is immutable.  It holds metadata
 /// useful for updating calls of the old function to the new type.
 struct TransformedFunction {
-  TransformedFunction(FunctionType *OriginalType, FunctionType *TransformedType,
+  TransformedFunction(FunctionType *OriginalType,
+                      FunctionType *TransformedType,
                       std::vector<unsigned> ArgumentIndexMapping)
-      : OriginalType(OriginalType), TransformedType(TransformedType),
+      : OriginalType(OriginalType),
+        TransformedType(TransformedType),
         ArgumentIndexMapping(ArgumentIndexMapping) {}
 
   // Disallow copies.
-  TransformedFunction(const TransformedFunction &) = delete;
-  TransformedFunction &operator=(const TransformedFunction &) = delete;
+  TransformedFunction(const TransformedFunction&) = delete;
+  TransformedFunction &operator=(const TransformedFunction&) = delete;
 
   // Allow moves.
-  TransformedFunction(TransformedFunction &&) = default;
-  TransformedFunction &operator=(TransformedFunction &&) = default;
+  TransformedFunction(TransformedFunction&&) = default;
+  TransformedFunction &operator=(TransformedFunction&&) = default;
 
   /// Type of the function before the transformation.
   FunctionType *OriginalType;
@@ -230,13 +233,12 @@ struct TransformedFunction {
   std::vector<unsigned> ArgumentIndexMapping;
 };
 
-#if LLVM_VERSION_CODE >= LLVM_VERSION(6, 0)
 /// Given function attributes from a call site for the original function,
 /// return function attributes appropriate for a call to the transformed
 /// function.
 AttributeList TransformFunctionAttributes(
-    const TransformedFunction &TransformedFunction,
-    LLVMContext &Ctx, AttributeList CallSiteAttrs) {
+    const TransformedFunction& TransformedFunction,
+    LLVMContext& Ctx, AttributeList CallSiteAttrs) {
 
   // Construct a vector of AttributeSet for each function argument.
   std::vector<llvm::AttributeSet> ArgumentAttributes(
@@ -253,23 +255,24 @@ AttributeList TransformFunctionAttributes(
 
   // Copy annotations on varargs arguments.
   for (unsigned i = TransformedFunction.OriginalType->getNumParams(),
-                ie = CallSiteAttrs.getNumAttrSets();
-       i < ie; ++i) {
+       ie = CallSiteAttrs.getNumAttrSets(); i < ie; ++i) {
     ArgumentAttributes.push_back(CallSiteAttrs.getParamAttributes(i));
   }
 
-  return AttributeList::get(Ctx, CallSiteAttrs.getFnAttributes(),
-                            CallSiteAttrs.getRetAttributes(),
-                            llvm::makeArrayRef(ArgumentAttributes));
+  return AttributeList::get(
+      Ctx,
+      CallSiteAttrs.getFnAttributes(),
+      CallSiteAttrs.getRetAttributes(),
+      llvm::makeArrayRef(ArgumentAttributes));
 }
-#endif
 
 class Taint : public ModulePass {
   friend struct TaintFunction;
   friend class TaintVisitor;
 
   enum {
-    ShadowWidth = 32
+    ShadowWidthBits  = 32,
+    ShadowWidthBytes = ShadowWidthBits / 8
   };
 
   /// Which ABI should be used for instrumented functions?
@@ -324,6 +327,8 @@ class Taint : public ModulePass {
   Constant *RetvalTLS;
   void *(*GetArgTLSPtr)();
   void *(*GetRetvalTLSPtr)();
+  FunctionType *GetArgTLSTy;
+  FunctionType *GetRetvalTLSTy;
   Constant *GetArgTLS;
   Constant *GetRetvalTLS;
   Constant *ExternalShadowMask;
@@ -343,23 +348,23 @@ class Taint : public ModulePass {
   FunctionType *TaintTraceAllocaFnTy;
   FunctionType *TaintCheckBoundsFnTy;
   FunctionType *TaintDebugFnTy;
-  Constant *TaintUnionFn;
-  Constant *TaintCheckedUnionFn;
-  Constant *TaintUnionLoadFn;
-  Constant *TaintUnionStoreFn;
-  Constant *TaintUnimplementedFn;
-  Constant *TaintSetLabelFn;
-  Constant *TaintNonzeroLabelFn;
-  Constant *TaintVarargWrapperFn;
-  Constant *TaintTraceCmpFn;
-  Constant *TaintTraceCondFn;
-  Constant *TaintTraceIndirectCallFn;
-  Constant *TaintTraceGEPFn;
-  Constant *TaintPushStackFrameFn;
-  Constant *TaintPopStackFrameFn;
-  Constant *TaintTraceAllocaFn;
-  Constant *TaintCheckBoundsFn;
-  Constant *TaintDebugFn;
+  FunctionCallee TaintUnionFn;
+  FunctionCallee TaintCheckedUnionFn;
+  FunctionCallee TaintUnionLoadFn;
+  FunctionCallee TaintUnionStoreFn;
+  FunctionCallee TaintUnimplementedFn;
+  FunctionCallee TaintSetLabelFn;
+  FunctionCallee TaintNonzeroLabelFn;
+  FunctionCallee TaintVarargWrapperFn;
+  FunctionCallee TaintTraceCmpFn;
+  FunctionCallee TaintTraceCondFn;
+  FunctionCallee TaintTraceIndirectCallFn;
+  FunctionCallee TaintTraceGEPFn;
+  FunctionCallee TaintPushStackFrameFn;
+  FunctionCallee TaintPopStackFrameFn;
+  FunctionCallee TaintTraceAllocaFn;
+  FunctionCallee TaintCheckBoundsFn;
+  FunctionCallee TaintDebugFn;
   Constant *CallStack;
   MDNode *ColdCallWeights;
   TaintABIList ABIList;
@@ -383,6 +388,9 @@ class Taint : public ModulePass {
 
   void addContextRecording(Function &F);
   void addFrameTracing(Function &F);
+
+  void initializeRuntimeFunctions(Module &M);
+  void initializeCallbackFunctions(Module &M);
 
 public:
   static char ID;
@@ -408,7 +416,6 @@ struct TaintFunction {
   DenseMap<AllocaInst *, AllocaInst *> AllocaShadowMap;
   std::vector<std::pair<PHINode *, PHINode *>> PHIFixups;
   DenseSet<Instruction *> SkipInsts;
-  DenseSet<Instruction *> StoreInsts;
   std::vector<Value *> NonZeroChecks;
   bool AvoidNewBlocks;
   std::hash<std::string> HashFn;
@@ -443,7 +450,7 @@ struct TaintFunction {
   Value *combineCmpInstShadows(CmpInst *CI, uint8_t op);
   Value *loadShadow(Value *ShadowAddr, uint64_t Size, uint64_t Align,
                     Instruction *Pos);
-  void storeShadow(Value *Addr, uint64_t Size, uint64_t Align, Value *Shadow,
+  void storeShadow(Value *Addr, uint64_t Size, Align Alignment, Value *Shadow,
                    Instruction *Pos);
   void visitCmpInst(CmpInst *I);
   void visitSwitchInst(SwitchInst *I);
@@ -463,6 +470,7 @@ public:
     return TF.F->getParent()->getDataLayout();
   }
 
+  //void visitUnaryOperator(UnaryOperator &UO);
   void visitBinaryOperator(BinaryOperator &BO);
   void visitBranchInst(BranchInst &BR);
   void visitCastInst(CastInst &CI);
@@ -472,7 +480,7 @@ public:
   void visitLoadInst(LoadInst &LI);
   void visitStoreInst(StoreInst &SI);
   void visitReturnInst(ReturnInst &RI);
-  void visitCallSite(CallSite CS);
+  void visitCallBase(CallBase &CB);
   void visitPHINode(PHINode &PN);
   void visitExtractElementInst(ExtractElementInst &I);
   void visitInsertElementInst(InsertElementInst &I);
@@ -513,7 +521,9 @@ Taint::Taint(
   std::vector<std::string> AllABIListFiles(std::move(ABIListFiles));
   AllABIListFiles.insert(AllABIListFiles.end(), ClABIListFiles.begin(),
                          ClABIListFiles.end());
-  ABIList.set(SpecialCaseList::createOrDie(AllABIListFiles));
+  // FIXME: should we propagate vfs::FileSystem to this constructor?
+  ABIList.set(
+      SpecialCaseList::createOrDie(AllABIListFiles, *vfs::getRealFileSystem()));
 }
 
 FunctionType *Taint::getArgsFunctionType(FunctionType *T) {
@@ -522,13 +532,8 @@ FunctionType *Taint::getArgsFunctionType(FunctionType *T) {
   if (T->isVarArg())
     ArgTypes.push_back(ShadowPtrTy);
   Type *RetType = T->getReturnType();
-  if (!RetType->isVoidTy()) {
-#if LLVM_VERSION_CODE >= LLVM_VERSION(5, 0)
+  if (!RetType->isVoidTy())
     RetType = StructType::get(RetType, ShadowTy);
-#else
-    RetType = StructType::get(RetType, ShadowTy, (Type *)nullptr);
-#endif
-  }
   return FunctionType::get(RetType, ArgTypes, T->isVarArg());
 }
 
@@ -553,7 +558,7 @@ TransformedFunction Taint::getCustomFunctionType(FunctionType *T) {
   // at call sites can be updated.
   std::vector<unsigned> ArgumentIndexMapping;
   for (unsigned i = 0, ie = T->getNumParams(); i != ie; ++i) {
-    Type *param_type = T->getParamType(i);
+    Type* param_type = T->getParamType(i);
     FunctionType *FT;
     if (isa<PointerType>(param_type) &&
         (FT = dyn_cast<FunctionType>(
@@ -627,9 +632,7 @@ void Taint::addFrameTracing(Function &F) {
 bool Taint::doInitialization(Module &M) {
   Triple TargetTriple(M.getTargetTriple());
   bool IsX86_64 = TargetTriple.getArch() == Triple::x86_64;
-  // bool IsMIPS64 argetTriple.isMIPS64();
-  bool IsMIPS64 = TargetTriple.getArch() == llvm::Triple::mips64 ||
-                  TargetTriple.getArch() == llvm::Triple::mips64el;
+  bool IsMIPS64 = TargetTriple.isMIPS64();
   bool IsAArch64 = TargetTriple.getArch() == Triple::aarch64 ||
                    TargetTriple.getArch() == Triple::aarch64_be;
 
@@ -637,15 +640,15 @@ bool Taint::doInitialization(Module &M) {
 
   Mod = &M;
   Ctx = &M.getContext();
-  ShadowTy = IntegerType::get(*Ctx, ShadowWidth);
   Int8Ty = IntegerType::get(*Ctx, 8);
   Int16Ty = IntegerType::get(*Ctx, 16);
   Int32Ty = IntegerType::get(*Ctx, 32);
   Int64Ty = IntegerType::get(*Ctx, 64);
+  ShadowTy = IntegerType::get(*Ctx, ShadowWidthBits);
   ShadowPtrTy = PointerType::getUnqual(ShadowTy);
   IntptrTy = DL.getIntPtrType(*Ctx);
   ZeroShadow = ConstantInt::getSigned(ShadowTy, 0);
-  ShadowPtrMul = ConstantInt::getSigned(IntptrTy, ShadowWidth / 8);
+  ShadowPtrMul = ConstantInt::getSigned(IntptrTy, ShadowWidthBytes);
   if (IsX86_64)
     ShadowPtrMask = ConstantInt::getSigned(IntptrTy, ~0x700000000000LL);
   else if (IsMIPS64)
@@ -703,17 +706,17 @@ bool Taint::doInitialization(Module &M) {
   if (GetArgTLSPtr) {
     Type *ArgTLSTy = ArrayType::get(ShadowTy, 64);
     ArgTLS = nullptr;
+    GetArgTLSTy = FunctionType::get(PointerType::getUnqual(ArgTLSTy), false);
     GetArgTLS = ConstantExpr::getIntToPtr(
         ConstantInt::get(IntptrTy, uintptr_t(GetArgTLSPtr)),
-        PointerType::getUnqual(
-            FunctionType::get(PointerType::getUnqual(ArgTLSTy), false)));
+        PointerType::getUnqual(GetArgTLSTy));
   }
   if (GetRetvalTLSPtr) {
     RetvalTLS = nullptr;
+    GetRetvalTLSTy = FunctionType::get(PointerType::getUnqual(ShadowTy), false);
     GetRetvalTLS = ConstantExpr::getIntToPtr(
         ConstantInt::get(IntptrTy, uintptr_t(GetRetvalTLSPtr)),
-        PointerType::getUnqual(
-            FunctionType::get(PointerType::getUnqual(ShadowTy), false)));
+        PointerType::getUnqual(GetRetvalTLSTy));
   }
 
   ColdCallWeights = MDBuilder(*Ctx).createBranchWeights(1, 1000);
@@ -746,7 +749,7 @@ Taint::WrapperKind Taint::getWrapperKind(Function *F) {
 }
 
 void Taint::addGlobalNamePrefix(GlobalValue *GV) {
-  std::string GVName = GV->getName(), Prefix = "dfs$";
+  std::string GVName = std::string(GV->getName()), Prefix = "dfs$";
   GV->setName(Prefix + GVName);
 
   // Try to change the name of the function in module inline asm.  We only do
@@ -766,11 +769,11 @@ void Taint::addGlobalNamePrefix(GlobalValue *GV) {
 
 Function *
 Taint::buildWrapperFunction(Function *F, StringRef NewFName,
-                                        GlobalValue::LinkageTypes NewFLink,
-                                        FunctionType *NewFT) {
+                            GlobalValue::LinkageTypes NewFLink,
+                            FunctionType *NewFT) {
   FunctionType *FT = F->getFunctionType();
-  Function *NewF = Function::Create(NewFT, NewFLink, NewFName,
-                                    F->getParent());
+  Function *NewF = Function::Create(NewFT, NewFLink, F->getAddressSpace(),
+                                    NewFName, F->getParent());
   NewF->copyAttributesFrom(F);
   NewF->removeAttributes(
       AttributeList::ReturnIndex,
@@ -802,8 +805,8 @@ Taint::buildWrapperFunction(Function *F, StringRef NewFName,
 Constant *Taint::getOrBuildTrampolineFunction(FunctionType *FT,
                                               StringRef FName) {
   FunctionType *FTT = getTrampolineFunctionType(FT);
-  Constant *C = Mod->getOrInsertFunction(FName, FTT);
-  Function *F = dyn_cast<Function>(C);
+  FunctionCallee C = Mod->getOrInsertFunction(FName, FTT);
+  Function *F = dyn_cast<Function>(C.getCallee());
   if (F && F->isDeclaration()) {
     F->setLinkage(GlobalValue::LinkOnceODRLinkage);
     BasicBlock *BB = BasicBlock::Create(*Ctx, "entry", F);
@@ -811,7 +814,7 @@ Constant *Taint::getOrBuildTrampolineFunction(FunctionType *FT,
     Function::arg_iterator AI = F->arg_begin(); ++AI;
     for (unsigned N = FT->getNumParams(); N != 0; ++AI, --N)
       Args.push_back(&*AI);
-    CallInst *CI = CallInst::Create(&*F->arg_begin(), Args, "", BB);
+    CallInst *CI = CallInst::Create(FT, &*F->arg_begin(), Args, "", BB);
     ReturnInst *RI;
     if (FT->getReturnType()->isVoidTy())
       RI = ReturnInst::Create(*Ctx, BB);
@@ -828,120 +831,221 @@ Constant *Taint::getOrBuildTrampolineFunction(FunctionType *FT,
                     &*std::prev(F->arg_end()), RI);
   }
 
-  return C;
+  return cast<Constant>(C.getCallee());
+}
+
+// Initialize DataFlowSanitizer runtime functions and declare them in the module
+void Taint::initializeRuntimeFunctions(Module &M) {
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
+                         Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 1, Attribute::ZExt);
+    TaintUnionFn =
+        Mod->getOrInsertFunction("__taint_union", TaintUnionFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
+                         Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 1, Attribute::ZExt);
+    TaintCheckedUnionFn =
+        Mod->getOrInsertFunction("taint_union", TaintUnionFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadOnly);
+    AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
+                         Attribute::ZExt);
+    TaintUnionLoadFn =
+        Mod->getOrInsertFunction("__taint_union_load", TaintUnionLoadFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    TaintUnionStoreFn =
+        Mod->getOrInsertFunction("__taint_union_store", TaintUnionStoreFnTy, AL);
+  }
+  {
+    TaintUnimplementedFn =
+        Mod->getOrInsertFunction("__dfsan_unimplemented", TaintUnimplementedFnTy);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    TaintSetLabelFn =
+        Mod->getOrInsertFunction("__dfsan_set_label", TaintSetLabelFnTy, AL);
+  }
+  {
+    TaintNonzeroLabelFn =
+        Mod->getOrInsertFunction("__dfsan_nonzero_label", TaintNonzeroLabelFnTy);
+  }
+  {
+    TaintVarargWrapperFn = Mod->getOrInsertFunction("__dfsan_vararg_wrapper",
+                                                    TaintVarargWrapperFnTy);
+  }
+}
+
+// Initializes event callback functions and declare them in the module
+void Taint::initializeCallbackFunctions(Module &M) {
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 1, Attribute::ZExt);
+    TaintTraceCmpFn =
+        Mod->getOrInsertFunction("__taint_trace_cmp", TaintTraceCmpFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    TaintTraceCondFn =
+        Mod->getOrInsertFunction("__taint_trace_cond", TaintTraceCondFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    TaintTraceIndirectCallFn =
+        Mod->getOrInsertFunction("__taint_trace_indcall", TaintTraceIndirectCallFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 2, Attribute::ZExt);
+    TaintTraceGEPFn =
+        Mod->getOrInsertFunction("__taint_trace_gep", TaintTraceGEPFnTy, AL);
+  }
+
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    TaintPushStackFrameFn =
+        Mod->getOrInsertFunction("__taint_push_stack_frame", TaintPushStackFrameFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    TaintPopStackFrameFn =
+        Mod->getOrInsertFunction("__taint_pop_stack_frame", TaintPopStackFrameFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
+                         Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    TaintTraceAllocaFn =
+        Mod->getOrInsertFunction("__taint_trace_alloca", TaintTraceAllocaFnTy, AL);
+  }
+  {
+    AttributeList AL;
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::NoUnwind);
+    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
+                         Attribute::ReadNone);
+    AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    TaintCheckBoundsFn =
+        Mod->getOrInsertFunction("__taint_check_bounds", TaintCheckBoundsFnTy, AL);
+  }
+
 }
 
 bool Taint::runOnModule(Module &M) {
   if (ABIList.isIn(M, "skip"))
     return false;
 
+  //const unsigned InitialGlobalSize = M.global_size();
+  const unsigned InitialModuleSize = M.size();
+
+  bool Changed = false;
+
   if (!GetArgTLSPtr) {
     Type *ArgTLSTy = ArrayType::get(ShadowTy, 64);
     ArgTLS = Mod->getOrInsertGlobal("__dfsan_arg_tls", ArgTLSTy);
-    if (GlobalVariable *G = dyn_cast<GlobalVariable>(ArgTLS))
+    if (GlobalVariable *G = dyn_cast<GlobalVariable>(ArgTLS)) {
+      Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
       G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
+    }
   }
   if (!GetRetvalTLSPtr) {
     RetvalTLS = Mod->getOrInsertGlobal("__dfsan_retval_tls", ShadowTy);
-    if (GlobalVariable *G = dyn_cast<GlobalVariable>(RetvalTLS))
+    if (GlobalVariable *G = dyn_cast<GlobalVariable>(RetvalTLS)) {
+      Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
       G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
+    }
   }
 
   ExternalShadowMask =
       Mod->getOrInsertGlobal(kTaintExternShadowPtrMask, IntptrTy);
 
-  TaintUnionFn = Mod->getOrInsertFunction("__taint_union", TaintUnionFnTy);
-  if (Function *F = dyn_cast<Function>(TaintUnionFn)) {
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::ReadNone);
-    F->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
-    F->addParamAttr(0, Attribute::ZExt);
-    F->addParamAttr(1, Attribute::ZExt);
-  }
-
-  TaintCheckedUnionFn = Mod->getOrInsertFunction("taint_union", TaintUnionFnTy);
-  if (Function *F = dyn_cast<Function>(TaintCheckedUnionFn)) {
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::ReadNone);
-    F->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
-    F->addParamAttr(0, Attribute::ZExt);
-    F->addParamAttr(1, Attribute::ZExt);
-  }
-
-  TaintUnionLoadFn =
-      Mod->getOrInsertFunction("__taint_union_load", TaintUnionLoadFnTy);
-  if (Function *F = dyn_cast<Function>(TaintUnionLoadFn)) {
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::ReadOnly);
-    F->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
-  }
-
-  TaintUnionStoreFn =
-      Mod->getOrInsertFunction("__taint_union_store", TaintUnionStoreFnTy);
-  if (Function *F = dyn_cast<Function>(TaintUnionStoreFn)) {
-    F->addAttribute(AttributeList::FunctionIndex, Attribute::NoUnwind);
-    F->addParamAttr(0, Attribute::ZExt);
-  }
-
-  TaintUnimplementedFn =
-      Mod->getOrInsertFunction("__dfsan_unimplemented", TaintUnimplementedFnTy);
-  TaintSetLabelFn =
-      Mod->getOrInsertFunction("__dfsan_set_label", TaintSetLabelFnTy);
-  if (Function *F = dyn_cast<Function>(TaintSetLabelFn)) {
-    F->addParamAttr(0, Attribute::ZExt);
-  }
-  TaintNonzeroLabelFn =
-      Mod->getOrInsertFunction("__dfsan_nonzero_label", TaintNonzeroLabelFnTy);
-  TaintVarargWrapperFn = Mod->getOrInsertFunction("__dfsan_vararg_wrapper",
-                                                  TaintVarargWrapperFnTy);
-
-  TaintTraceCmpFn =
-    Mod->getOrInsertFunction("__taint_trace_cmp", TaintTraceCmpFnTy);
-  TaintTraceCondFn =
-    Mod->getOrInsertFunction("__taint_trace_cond", TaintTraceCondFnTy);
-  TaintTraceIndirectCallFn =
-    Mod->getOrInsertFunction("__taint_trace_indcall", TaintTraceIndirectCallFnTy);
-  TaintTraceGEPFn =
-    Mod->getOrInsertFunction("__taint_trace_gep", TaintTraceGEPFnTy);
-
-  TaintPushStackFrameFn =
-    Mod->getOrInsertFunction("__taint_push_stack_frame", TaintPushStackFrameFnTy);
-  TaintPopStackFrameFn =
-    Mod->getOrInsertFunction("__taint_pop_stack_frame", TaintPopStackFrameFnTy);
-  TaintTraceAllocaFn =
-    Mod->getOrInsertFunction("__taint_trace_alloca", TaintTraceAllocaFnTy);
-  TaintCheckBoundsFn =
-    Mod->getOrInsertFunction("__taint_check_bounds", TaintCheckBoundsFnTy);
-
   TaintDebugFn =
     Mod->getOrInsertFunction("__taint_debug", TaintDebugFnTy);
 
   CallStack = Mod->getOrInsertGlobal("__taint_trace_callstack", Int32Ty);
-  if (GlobalVariable *G = dyn_cast<GlobalVariable>(CallStack))
+  if (GlobalVariable *G = dyn_cast<GlobalVariable>(CallStack)) {
+    Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
     G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
+  }
+
+  initializeCallbackFunctions(M);
+  initializeRuntimeFunctions(M);
 
   std::vector<Function *> FnsToInstrument;
   SmallPtrSet<Function *, 2> FnsWithNativeABI;
   for (Function &i : M) {
     if (!i.isIntrinsic() &&
-        &i != TaintUnionFn &&
-        &i != TaintCheckedUnionFn &&
-        &i != TaintUnionLoadFn &&
-        &i != TaintUnionStoreFn &&
-        &i != TaintUnimplementedFn &&
-        &i != TaintSetLabelFn &&
-        &i != TaintNonzeroLabelFn &&
-        &i != TaintVarargWrapperFn &&
-        &i != TaintTraceCmpFn &&
-        &i != TaintTraceCondFn &&
-        &i != TaintTraceIndirectCallFn &&
-        &i != TaintTraceGEPFn &&
-        &i != TaintDebugFn &&
-        &i != TaintUnionStoreFn &&
-        &i != TaintPushStackFrameFn &&
-        &i != TaintPopStackFrameFn &&
-        &i != TaintTraceAllocaFn &&
-        &i != TaintCheckBoundsFn) {
+        &i != TaintUnionFn.getCallee()->stripPointerCasts() &&
+        &i != TaintCheckedUnionFn.getCallee()->stripPointerCasts() &&
+        &i != TaintUnionLoadFn.getCallee()->stripPointerCasts() &&
+        &i != TaintUnionStoreFn.getCallee()->stripPointerCasts() &&
+        &i != TaintUnimplementedFn.getCallee()->stripPointerCasts() &&
+        &i != TaintSetLabelFn.getCallee()->stripPointerCasts() &&
+        &i != TaintNonzeroLabelFn.getCallee()->stripPointerCasts() &&
+        &i != TaintVarargWrapperFn.getCallee()->stripPointerCasts() &&
+        &i != TaintTraceCmpFn.getCallee()->stripPointerCasts() &&
+        &i != TaintTraceCondFn.getCallee()->stripPointerCasts() &&
+        &i != TaintTraceIndirectCallFn.getCallee()->stripPointerCasts() &&
+        &i != TaintTraceGEPFn.getCallee()->stripPointerCasts() &&
+        &i != TaintPushStackFrameFn.getCallee()->stripPointerCasts() &&
+        &i != TaintPopStackFrameFn.getCallee()->stripPointerCasts() &&
+        &i != TaintTraceAllocaFn.getCallee()->stripPointerCasts() &&
+        &i != TaintCheckBoundsFn.getCallee()->stripPointerCasts() &&
+        &i != TaintDebugFn.getCallee()->stripPointerCasts()) {
       FnsToInstrument.push_back(&i);
     }
   }
@@ -989,7 +1093,8 @@ bool Taint::runOnModule(Module &M) {
       // easily identify cases of mismatching ABIs.
       if (getInstrumentedABI() == IA_Args && !IsZeroArgsVoidRet) {
         FunctionType *NewFT = getArgsFunctionType(FT);
-        Function *NewF = Function::Create(NewFT, F.getLinkage(), "", &M);
+        Function *NewF = Function::Create(NewFT, F.getLinkage(),
+                                          F.getAddressSpace(), "", &M);
         NewF->copyAttributesFrom(&F);
         NewF->removeAttributes(
             AttributeList::ReturnIndex,
@@ -1140,7 +1245,8 @@ bool Taint::runOnModule(Module &M) {
     }
   }
 
-  return false;
+  return Changed || !FnsToInstrument.empty() ||
+         /*M.global_size() != InitialGlobalSize ||*/ M.size() != InitialModuleSize;
 }
 
 Value *TaintFunction::getArgTLSPtr() {
@@ -1150,7 +1256,7 @@ Value *TaintFunction::getArgTLSPtr() {
     return ArgTLSPtr = TT.ArgTLS;
 
   IRBuilder<> IRB(&F->getEntryBlock().front());
-  return ArgTLSPtr = IRB.CreateCall(TT.GetArgTLS, {});
+  return ArgTLSPtr = IRB.CreateCall(TT.GetArgTLSTy, TT.GetArgTLS, {});
 }
 
 Value *TaintFunction::getRetvalTLS() {
@@ -1160,12 +1266,13 @@ Value *TaintFunction::getRetvalTLS() {
     return RetvalTLSPtr = TT.RetvalTLS;
 
   IRBuilder<> IRB(&F->getEntryBlock().front());
-  return RetvalTLSPtr = IRB.CreateCall(TT.GetRetvalTLS, {});
+  return RetvalTLSPtr = IRB.CreateCall(TT.GetRetvalTLSTy, TT.GetRetvalTLS, {});
 }
 
 Value *TaintFunction::getArgTLS(unsigned Idx, Instruction *Pos) {
   IRBuilder<> IRB(Pos);
-  return IRB.CreateConstGEP2_64(getArgTLSPtr(), 0, Idx);
+  return IRB.CreateConstGEP2_64(ArrayType::get(TT.ShadowTy, 64),
+                                getArgTLSPtr(), 0, Idx);
 }
 
 Value *TaintFunction::getShadow(Value *V) {
@@ -1183,7 +1290,8 @@ Value *TaintFunction::getShadow(Value *V) {
             TT.ArgTLS ? &*F->getEntryBlock().begin()
                        : cast<Instruction>(ArgTLSPtr)->getNextNode();
         IRBuilder<> IRB(ArgTLSPos);
-        Shadow = IRB.CreateLoad(getArgTLS(A->getArgNo(), ArgTLSPos));
+        Shadow =
+            IRB.CreateLoad(TT.ShadowTy, getArgTLS(A->getArgNo(), ArgTLSPos));
         break;
       }
       case Taint::IA_Args: {
@@ -1347,14 +1455,14 @@ Value *TaintFunction::loadShadow(Value *Addr, uint64_t Size, uint64_t Align,
     const auto i = AllocaShadowMap.find(AI);
     if (i != AllocaShadowMap.end()) {
       IRBuilder<> IRB(Pos);
-      return IRB.CreateLoad(i->second);
+      return IRB.CreateLoad(TT.ShadowTy, i->second);
     }
   }
 
-  SmallVector<Value *, 2> Objs;
+  SmallVector<const Value *, 2> Objs;
   GetUnderlyingObjects(Addr, Objs, Pos->getModule()->getDataLayout());
   bool AllConstants = true;
-  for (Value *Obj : Objs) {
+  for (const Value *Obj : Objs) {
     if (isa<Function>(Obj) || isa<BlockAddress>(Obj))
       continue;
     if (isa<GlobalVariable>(Obj) && cast<GlobalVariable>(Obj)->isConstant())
@@ -1386,16 +1494,9 @@ void TaintVisitor::visitLoadInst(LoadInst &LI) {
     return;
   }
 
-  uint64_t Align;
-  if (ClPreserveAlignment) {
-    Align = LI.getAlignment();
-    if (Align == 0)
-      Align = DL.getABITypeAlignment(LI.getType());
-  } else {
-    Align = 1;
-  }
-  IRBuilder<> IRB(&LI);
-  Value *Shadow = TF.loadShadow(LI.getPointerOperand(), Size, Align, &LI);
+  Align Alignment = ClPreserveAlignment ? LI.getAlign() : Align(1);
+  Value *Shadow =
+      TF.loadShadow(LI.getPointerOperand(), Size, Alignment.value(), &LI);
 #if 0
   //FIXME: tainted pointer
   if (ClCombinePointerLabelsOnLoad) {
@@ -1411,7 +1512,7 @@ void TaintVisitor::visitLoadInst(LoadInst &LI) {
   TF.setShadow(&LI, Shadow);
 }
 
-void TaintFunction::storeShadow(Value *Addr, uint64_t Size, uint64_t Align,
+void TaintFunction::storeShadow(Value *Addr, uint64_t Size, Align Alignment,
                                 Value *Shadow, Instruction *Pos) {
   if (AllocaInst *AI = dyn_cast<AllocaInst>(Addr)) {
     const auto i = AllocaShadowMap.find(AI);
@@ -1422,11 +1523,11 @@ void TaintFunction::storeShadow(Value *Addr, uint64_t Size, uint64_t Align,
     }
   }
 
-  uint64_t ShadowAlign = Align * TT.ShadowWidth / 8;
+  const Align ShadowAlign(Alignment.value() * TT.ShadowWidthBytes);
   IRBuilder<> IRB(Pos);
   Value *ShadowAddr = TT.getShadowAddress(Addr, Pos);
   if (Shadow == TT.ZeroShadow) {
-    IntegerType *ShadowTy = IntegerType::get(*TT.Ctx, Size * TT.ShadowWidth);
+    IntegerType *ShadowTy = IntegerType::get(*TT.Ctx, Size * TT.ShadowWidthBits);
     Value *ExtZeroShadow = ConstantInt::get(ShadowTy, 0);
     Value *ExtShadowAddr =
         IRB.CreateBitCast(ShadowAddr, PointerType::getUnqual(ShadowTy));
@@ -1440,20 +1541,13 @@ void TaintFunction::storeShadow(Value *Addr, uint64_t Size, uint64_t Align,
 
 void TaintVisitor::visitStoreInst(StoreInst &SI) {
   if (SI.getMetadata("nosanitize")) return;
-  if (TF.StoreInsts.count(&SI)) return;
+
   auto &DL = SI.getModule()->getDataLayout();
   uint64_t Size = DL.getTypeStoreSize(SI.getValueOperand()->getType());
   if (Size == 0)
     return;
 
-  uint64_t Align;
-  if (ClPreserveAlignment) {
-    Align = SI.getAlignment();
-    if (Align == 0)
-      Align = DL.getABITypeAlignment(SI.getValueOperand()->getType());
-  } else {
-    Align = 1;
-  }
+  const Align Alignment = ClPreserveAlignment ? SI.getAlign() : Align(1);;
 
   Value* Shadow = TF.getShadow(SI.getValueOperand());
 #if 0
@@ -1463,10 +1557,13 @@ void TaintVisitor::visitStoreInst(StoreInst &SI) {
     Shadow = TF.combineShadows(Shadow, PtrShadow, &SI);
   }
 #endif
-  TF.storeShadow(SI.getPointerOperand(), Size, Align, Shadow, &SI);
+  TF.storeShadow(SI.getPointerOperand(), Size, Alignment, Shadow, &SI);
   if (ClTraceBound)
     TF.checkBounds(SI.getPointerOperand(), &SI);
 }
+
+//void TaintVisitor::visitUnaryOperator(UnaryOperator &UO) {
+//}
 
 void TaintVisitor::visitBinaryOperator(BinaryOperator &BO) {
   if (BO.getMetadata("nosanitize")) return;
@@ -1711,7 +1808,7 @@ void TaintVisitor::visitMemTransferInst(MemTransferInst &I) {
   Value *SrcShadow = TF.TT.getShadowAddress(I.getSource(), &I);
   Value *LenShadow = IRB.CreateMul(
       I.getLength(),
-      ConstantInt::get(I.getLength()->getType(), TF.TT.ShadowWidth / 8));
+      ConstantInt::get(I.getLength()->getType(), TF.TT.ShadowWidthBytes));
 #if LLVM_VERSION_CODE < LLVM_VERSION(7, 0)
   Value *AlignShadow;
   if (ClPreserveAlignment) {
@@ -1732,17 +1829,17 @@ void TaintVisitor::visitMemTransferInst(MemTransferInst &I) {
   DestShadow = IRB.CreateBitCast(DestShadow, Int8Ptr);
   SrcShadow = IRB.CreateBitCast(SrcShadow, Int8Ptr);
   auto *MTI = cast<MemTransferInst>(
-      IRB.CreateCall(I.getCalledValue(),
+      IRB.CreateCall(I.getFunctionType(), I.getCalledOperand(),
                      {DestShadow, SrcShadow, LenShadow, I.getVolatileCst()}));
   if (ClPreserveAlignment) {
-    MTI->setDestAlignment(I.getDestAlignment() * (TF.TT.ShadowWidth / 8));
-    MTI->setSourceAlignment(I.getSourceAlignment() *
-                            (TF.TT.ShadowWidth / 8));
+    MTI->setDestAlignment(I.getDestAlign() * TF.TT.ShadowWidthBytes);
+    MTI->setSourceAlignment(I.getSourceAlign() * TF.TT.ShadowWidthBytes);
   } else {
-    MTI->setDestAlignment(TF.TT.ShadowWidth / 8);
-    MTI->setSourceAlignment(TF.TT.ShadowWidth / 8);
+    MTI->setDestAlignment(Align(TF.TT.ShadowWidthBytes));
+    MTI->setSourceAlignment(Align(TF.TT.ShadowWidthBytes));
   }
 #endif
+  // FIXME trace memcpy
 }
 
 void TaintVisitor::visitReturnInst(ReturnInst &RI) {
@@ -1768,9 +1865,10 @@ void TaintVisitor::visitReturnInst(ReturnInst &RI) {
   }
 }
 
-void TaintVisitor::visitCallSite(CallSite CS) {
-  Function *F = CS.getCalledFunction();
-  if ((F && F->isIntrinsic()) || isa<InlineAsm>(CS.getCalledValue())) {
+void TaintVisitor::visitCallBase(CallBase &CB) {
+  Function *F = CB.getCalledFunction();
+  if ((F && F->isIntrinsic()) || CB.isInlineAsm()) {
+    // FIXME arguments
     //visitOperandShadowInst(*CS.getInstruction());
     //llvm::errs() << *(CS.getCalledValue()) << "\n";
     return;
@@ -1778,53 +1876,53 @@ void TaintVisitor::visitCallSite(CallSite CS) {
 
   // Calls to this function are synthesized in wrappers, and we shouldn't
   // instrument them.
-  if (F == TF.TT.TaintVarargWrapperFn)
+  if (F == TF.TT.TaintVarargWrapperFn.getCallee()->stripPointerCasts())
     return;
 
-  IRBuilder<> IRB(CS.getInstruction());
+  IRBuilder<> IRB(&CB);
 
   // trace indirect call
-  if (CS.getCalledFunction() == nullptr) {
-    Value *Shadow = TF.getShadow(CS.getCalledValue());
+  if (CB.getCalledFunction() == nullptr) {
+    Value *Shadow = TF.getShadow(CB.getCalledOperand());
     if (Shadow != TF.TT.ZeroShadow)
       IRB.CreateCall(TF.TT.TaintTraceIndirectCallFn, {Shadow});
   }
 
   // reset IRB
-  IRB.SetInsertPoint(CS.getInstruction());
+  IRB.SetInsertPoint(&CB);
 
   DenseMap<Value *, Function *>::iterator i =
-      TF.TT.UnwrappedFnMap.find(CS.getCalledValue());
+      TF.TT.UnwrappedFnMap.find(CB.getCalledOperand());
   if (i != TF.TT.UnwrappedFnMap.end()) {
     Function *F = i->second;
     switch (TF.TT.getWrapperKind(F)) {
     case Taint::WK_Warning:
-      CS.setCalledFunction(F);
+      CB.setCalledFunction(F);
       IRB.CreateCall(TF.TT.TaintUnimplementedFn,
                      IRB.CreateGlobalStringPtr(F->getName()));
-      TF.setShadow(CS.getInstruction(), TF.TT.ZeroShadow);
+      TF.setShadow(&CB, TF.TT.ZeroShadow);
       return;
     case Taint::WK_Discard:
-      CS.setCalledFunction(F);
-      TF.setShadow(CS.getInstruction(), TF.TT.ZeroShadow);
+      CB.setCalledFunction(F);
+      TF.setShadow(&CB, TF.TT.ZeroShadow);
       return;
     case Taint::WK_Functional:
-      CS.setCalledFunction(F);
+      CB.setCalledFunction(F);
       //FIXME:
-      // visitOperandShadowInst(*CS.getInstruction());
+      // visitOperandShadowInst(CS);
       return;
     case Taint::WK_Custom:
       // Don't try to handle invokes of custom functions, it's too complicated.
       // Instead, invoke the dfsw$ wrapper, which will in turn call the __dfsw_
       // wrapper.
-      if (CallInst *CI = dyn_cast<CallInst>(CS.getInstruction())) {
+      if (CallInst *CI = dyn_cast<CallInst>(&CB)) {
         FunctionType *FT = F->getFunctionType();
         TransformedFunction CustomFn = TF.TT.getCustomFunctionType(FT);
         std::string CustomFName = "__dfsw_";
         CustomFName += F->getName();
-        Constant *CustomF =
+        FunctionCallee CustomF =
             TF.TT.Mod->getOrInsertFunction(CustomFName, CustomFn.TransformedType);
-        if (Function *CustomFn = dyn_cast<Function>(CustomF)) {
+        if (Function *CustomFn = dyn_cast<Function>(CustomF.getCallee())) {
           CustomFn->copyAttributesFrom(F);
 
           // Custom functions returning non-void will write to the return label.
@@ -1836,7 +1934,7 @@ void TaintVisitor::visitCallSite(CallSite CS) {
 
         std::vector<Value *> Args;
 
-        CallSite::arg_iterator i = CS.arg_begin();
+        auto i = CB.arg_begin();
         for (unsigned n = FT->getNumParams(); n != 0; ++i, --n) {
           Type *T = (*i)->getType();
           FunctionType *ParamFT;
@@ -1856,19 +1954,19 @@ void TaintVisitor::visitCallSite(CallSite CS) {
           }
         }
 
-        i = CS.arg_begin();
+        i = CB.arg_begin();
         const unsigned ShadowArgStart = Args.size();
         for (unsigned n = FT->getNumParams(); n != 0; ++i, --n)
           Args.push_back(TF.getShadow(*i));
 
         if (FT->isVarArg()) {
           auto *LabelVATy = ArrayType::get(TF.TT.ShadowTy,
-                                           CS.arg_size() - FT->getNumParams());
+                                           CB.arg_size() - FT->getNumParams());
           auto *LabelVAAlloca = new AllocaInst(
               LabelVATy, getDataLayout().getAllocaAddrSpace(),
               "labelva", &TF.F->getEntryBlock().front());
 
-          for (unsigned n = 0; i != CS.arg_end(); ++i, ++n) {
+          for (unsigned n = 0; i != CB.arg_end(); ++i, ++n) {
             auto LabelVAPtr = IRB.CreateStructGEP(LabelVATy, LabelVAAlloca, n);
             IRB.CreateStore(TF.getShadow(*i), LabelVAPtr);
           }
@@ -1886,14 +1984,11 @@ void TaintVisitor::visitCallSite(CallSite CS) {
           Args.push_back(TF.LabelReturnAlloca);
         }
 
-        for (i = CS.arg_begin() + FT->getNumParams(); i != CS.arg_end(); ++i)
+        for (i = CB.arg_begin() + FT->getNumParams(); i != CB.arg_end(); ++i)
           Args.push_back(*i);
 
         CallInst *CustomCI = IRB.CreateCall(CustomF, Args);
         CustomCI->setCallingConv(CI->getCallingConv());
-#if LLVM_VERSION_CODE <= LLVM_VERSION(5, 0)
-        CustomCI->setAttributes(CI->getAttributes());
-#else
         CustomCI->setAttributes(TransformFunctionAttributes(
             CustomFn, CI->getContext(), CI->getAttributes()));
 
@@ -1907,11 +2002,13 @@ void TaintVisitor::visitCallSite(CallSite CS) {
             CustomCI->removeParamAttr(ArgNo, Attribute::NonNull);
           }
         }
-#endif
+
         if (!FT->getReturnType()->isVoidTy()) {
-          LoadInst *LabelLoad = IRB.CreateLoad(TF.LabelReturnAlloca);
+          LoadInst *LabelLoad =
+              IRB.CreateLoad(TF.TT.ShadowTy, TF.LabelReturnAlloca);
           TF.setShadow(CustomCI, LabelLoad);
         }
+
         CI->replaceAllUsesWith(CustomCI);
         CI->eraseFromParent();
         return;
@@ -1920,18 +2017,17 @@ void TaintVisitor::visitCallSite(CallSite CS) {
     }
   }
 
-  FunctionType *FT = cast<FunctionType>(
-      CS.getCalledValue()->getType()->getPointerElementType());
+  FunctionType *FT = CB.getFunctionType();
   if (TF.TT.getInstrumentedABI() == Taint::IA_TLS) {
     for (unsigned i = 0, n = FT->getNumParams(); i != n; ++i) {
-      IRB.CreateStore(TF.getShadow(CS.getArgument(i)),
-                      TF.getArgTLS(i, CS.getInstruction()));
+      IRB.CreateStore(TF.getShadow(CB.getArgOperand(i)),
+                      TF.getArgTLS(i, &CB));
     }
   }
 
   Instruction *Next = nullptr;
-  if (!CS.getType()->isVoidTy()) {
-    if (InvokeInst *II = dyn_cast<InvokeInst>(CS.getInstruction())) {
+  if (!CB.getType()->isVoidTy()) {
+    if (InvokeInst *II = dyn_cast<InvokeInst>(&CB)) {
       if (II->getNormalDest()->getSinglePredecessor()) {
         Next = &II->getNormalDest()->front();
       } else {
@@ -1940,15 +2036,15 @@ void TaintVisitor::visitCallSite(CallSite CS) {
         Next = &NewBB->front();
       }
     } else {
-      assert(CS->getIterator() != CS->getParent()->end());
-      Next = CS->getNextNode();
+      assert(CB.getIterator() != CB.getParent()->end());
+      Next = CB.getNextNode();
     }
 
     if (TF.TT.getInstrumentedABI() == Taint::IA_TLS) {
       IRBuilder<> NextIRB(Next);
-      LoadInst *LI = NextIRB.CreateLoad(TF.getRetvalTLS());
+      LoadInst *LI = NextIRB.CreateLoad(TF.TT.ShadowTy, TF.getRetvalTLS());
       TF.SkipInsts.insert(LI);
-      TF.setShadow(CS.getInstruction(), LI);
+      TF.setShadow(&CB, LI);
       TF.NonZeroChecks.push_back(LI);
     }
   }
@@ -1958,25 +2054,25 @@ void TaintVisitor::visitCallSite(CallSite CS) {
   if (TF.TT.getInstrumentedABI() == Taint::IA_Args) {
     FunctionType *NewFT = TF.TT.getArgsFunctionType(FT);
     Value *Func =
-        IRB.CreateBitCast(CS.getCalledValue(), PointerType::getUnqual(NewFT));
+        IRB.CreateBitCast(CB.getCalledOperand(), PointerType::getUnqual(NewFT));
     std::vector<Value *> Args;
 
-    CallSite::arg_iterator i = CS.arg_begin(), e = CS.arg_end();
+    auto i = CB.arg_begin(), E = CB.arg_end();
     for (unsigned n = FT->getNumParams(); n != 0; ++i, --n)
       Args.push_back(*i);
 
-    i = CS.arg_begin();
+    i = CB.arg_begin();
     for (unsigned n = FT->getNumParams(); n != 0; ++i, --n)
       Args.push_back(TF.getShadow(*i));
 
     if (FT->isVarArg()) {
-      unsigned VarArgSize = CS.arg_size() - FT->getNumParams();
+      unsigned VarArgSize = CB.arg_size() - FT->getNumParams();
       ArrayType *VarArgArrayTy = ArrayType::get(TF.TT.ShadowTy, VarArgSize);
       AllocaInst *VarArgShadow =
         new AllocaInst(VarArgArrayTy, getDataLayout().getAllocaAddrSpace(),
                        "", &TF.F->getEntryBlock().front());
       Args.push_back(IRB.CreateConstGEP2_32(VarArgArrayTy, VarArgShadow, 0, 0));
-      for (unsigned n = 0; i != e; ++i, ++n) {
+      for (unsigned n = 0; i != E; ++i, ++n) {
         IRB.CreateStore(
             TF.getShadow(*i),
             IRB.CreateConstGEP2_32(VarArgArrayTy, VarArgShadow, 0, n));
@@ -1984,32 +2080,30 @@ void TaintVisitor::visitCallSite(CallSite CS) {
       }
     }
 
-    CallSite NewCS;
-    if (InvokeInst *II = dyn_cast<InvokeInst>(CS.getInstruction())) {
-      NewCS = IRB.CreateInvoke(Func, II->getNormalDest(), II->getUnwindDest(),
-                               Args);
+    CallBase *NewCB;
+    if (InvokeInst *II = dyn_cast<InvokeInst>(&CB)) {
+      NewCB = IRB.CreateInvoke(NewFT, Func, II->getNormalDest(),
+                               II->getUnwindDest(), Args);
     } else {
-      NewCS = IRB.CreateCall(Func, Args);
+      NewCB = IRB.CreateCall(NewFT, Func, Args);
     }
-    NewCS.setCallingConv(CS.getCallingConv());
-    NewCS.setAttributes(CS.getAttributes().removeAttributes(
+    NewCB->setCallingConv(CB.getCallingConv());
+    NewCB->setAttributes(CB.getAttributes().removeAttributes(
         *TF.TT.Ctx, AttributeList::ReturnIndex,
-        AttributeFuncs::typeIncompatible(NewCS.getInstruction()->getType())));
+        AttributeFuncs::typeIncompatible(NewCB->getType())));
 
     if (Next) {
-      ExtractValueInst *ExVal =
-          ExtractValueInst::Create(NewCS.getInstruction(), 0, "", Next);
+      ExtractValueInst *ExVal = ExtractValueInst::Create(NewCB, 0, "", Next);
       TF.SkipInsts.insert(ExVal);
-      ExtractValueInst *ExShadow =
-          ExtractValueInst::Create(NewCS.getInstruction(), 1, "", Next);
+      ExtractValueInst *ExShadow = ExtractValueInst::Create(NewCB, 1, "", Next);
       TF.SkipInsts.insert(ExShadow);
       TF.setShadow(ExVal, ExShadow);
       TF.NonZeroChecks.push_back(ExShadow);
 
-      CS.getInstruction()->replaceAllUsesWith(ExVal);
+      CB.replaceAllUsesWith(ExVal);
     }
 
-    CS.getInstruction()->eraseFromParent();
+    CB.eraseFromParent();
   }
 }
 

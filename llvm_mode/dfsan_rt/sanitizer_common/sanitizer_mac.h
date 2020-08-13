@@ -1,9 +1,8 @@
 //===-- sanitizer_mac.h -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -31,19 +30,32 @@ struct MemoryMappingLayoutData {
   bool current_instrumented;
 };
 
-enum MacosVersion {
-  MACOS_VERSION_UNINITIALIZED = 0,
-  MACOS_VERSION_UNKNOWN,
-  MACOS_VERSION_LEOPARD,
-  MACOS_VERSION_SNOW_LEOPARD,
-  MACOS_VERSION_LION,
-  MACOS_VERSION_MOUNTAIN_LION,
-  MACOS_VERSION_MAVERICKS,
-  MACOS_VERSION_YOSEMITE,
-  MACOS_VERSION_UNKNOWN_NEWER
+template <typename VersionType>
+struct VersionBase {
+  u16 major;
+  u16 minor;
+
+  VersionBase(u16 major, u16 minor) : major(major), minor(minor) {}
+
+  bool operator==(const VersionType &other) const {
+    return major == other.major && minor == other.minor;
+  }
+  bool operator>=(const VersionType &other) const {
+    return major > other.major ||
+           (major == other.major && minor >= other.minor);
+  }
 };
 
-MacosVersion GetMacosVersion();
+struct MacosVersion : VersionBase<MacosVersion> {
+  MacosVersion(u16 major, u16 minor) : VersionBase(major, minor) {}
+};
+
+struct DarwinKernelVersion : VersionBase<DarwinKernelVersion> {
+  DarwinKernelVersion(u16 major, u16 minor) : VersionBase(major, minor) {}
+};
+
+MacosVersion GetMacosAlignedVersion();
+DarwinKernelVersion GetDarwinKernelVersion();
 
 char **GetEnviron();
 

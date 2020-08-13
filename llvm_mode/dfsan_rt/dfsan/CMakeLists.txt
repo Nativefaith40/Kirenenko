@@ -20,6 +20,14 @@ set(DFSAN_RTL_HEADERS
 list(APPEND ${SANITIZER_COMMON_CFLAGS} "-O3")
 set(DFSAN_COMMON_CFLAGS ${SANITIZER_COMMON_CFLAGS})
 
+if(OS_NAME MATCHES "Linux" AND
+   COMPILER_RT_LIBCXX_PATH AND
+   COMPILER_RT_LIBCXXABI_PATH)
+  list(APPEND DFSAN_COMMON_CFLAGS -nostdinc++ -D_LIBCPP_ABI_VERSION=Taint)
+  # Remove -stdlib= which is unused when passing -nostdinc++.
+  #string(REGEX REPLACE "-stdlib=[a-zA-Z+]*" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+endif()
+
 append_rtti_flag(OFF DFSAN_COMMON_CFLAGS)
 # Prevent clang from generating libc calls.
 append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding DFSAN_COMMON_CFLAGS)
@@ -44,6 +52,38 @@ foreach(arch ${DFSAN_SUPPORTED_ARCH})
     EXTRA dfsan.syms.extra)
   add_dependencies(dfsan
     dfsan_rt-${arch}-symbols)
+ 
+  if(OS_NAME MATCHES "Linux" AND
+    COMPILER_RT_LIBCXX_PATH AND
+    COMPILER_RT_LIBCXXABI_PATH)
+    macro(partially_link_libcxx name dir arch)
+      set(cxx_${arch}_merge_dir "${CMAKE_CURRENT_BINARY_DIR}/cxx_${arch}_merge.dir")
+      file(MAKE_DIRECTORY ${cxx_${arch}_merge_dir})
+      add_custom_command(TARGET dfsan_rt-${arch} POST_BUILD
+        COMMAND ${CMAKE_LINKER} --whole-archive "$<TARGET_LINKER_FILE:dfsan_rt-${arch}>" --no-whole-archive ${dir}/lib/libc++.a --no-whole-archive ${dir}/lib/libc++abi.a -r -o ${name}.o
+        COMMAND ${CMAKE_OBJCOPY} --localize-hidden ${name}.o
+        COMMAND ${CMAKE_COMMAND} -E remove "$<TARGET_LINKER_FILE:dfsan_rt-${arch}>"
+        COMMAND ${CMAKE_AR} qcs "$<TARGET_LINKER_FILE:dfsan_rt-${arch}>" ${name}.o
+        WORKING_DIRECTORY ${cxx_${arch}_merge_dir}
+      )
+    endmacro()
+
+    set(TARGET_CFLAGS ${TARGET_${arch}_CFLAGS} PARENT_SCOPE)
+    set(LIBCXX_${arch}_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/libcxx_taint_${arch})
+    add_custom_libcxx(libcxx_taint_${arch} ${LIBCXX_${arch}_PREFIX}
+      CFLAGS ${TARGET_CFLAGS}
+             -D_LIBCPP_ABI_VERSION=Taint
+             -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=1
+             -fvisibility=hidden
+      CMAKE_ARGS -DCMAKE_CXX_COMPILER_WORKS=ON
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+                -DLIBCXX_ENABLE_EXCEPTIONS=ON
+                -DLIBCXX_ABI_NAMESPACE=__Taint)
+    target_compile_options(dfsan_rt-${arch} PRIVATE -isystem ${LIBCXX_${arch}_PREFIX}/include/c++/v1)
+    add_dependencies(dfsan_rt-${arch} libcxx_taint_${arch}-build)
+    partially_link_libcxx(taint ${LIBCXX_${arch}_PREFIX} ${arch})
+  endif()
+
   install(FILES ${COMPILER_RT_OUTPUT_DIR}/libdfsan_rt-${arch}.a.syms
     DESTINATION ${COMPILER_RT_LIBRARY_INSTALL_DIR})
 endforeach()
