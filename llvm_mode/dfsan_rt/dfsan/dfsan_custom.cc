@@ -352,6 +352,17 @@ __dfsw___strdup(const char *s, dfsan_label s_label, dfsan_label *ret_label) {
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE char *
+__dfsw___strndup(const char *s, size_t n, dfsan_label s_label,
+                 dfsan_label n_label, dfsan_label *ret_label) {
+  size_t len = strlen(s);
+  len = len > n ? n : len;
+  void *p = malloc(len+1);
+  dfsan_memcpy(p, s, len+1);
+  *ret_label = 0;
+  return static_cast<char *>(p);
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE char *
 __dfsw_strncpy(char *s1, const char *s2, size_t n, dfsan_label s1_label,
                dfsan_label s2_label, dfsan_label n_label,
                dfsan_label *ret_label) {
