@@ -288,8 +288,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
 
   // shape
   bool shape = true;
-  uptr shape_ext = 0;
-  if (get_label_info(label0)->op != 0) {
+  if (__dfsan_label_info[label0].op != 0) {
     // not raw input bytes
     shape = false;
   } else {
@@ -297,7 +296,6 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
     for (uptr i = 1; i != n; ++i) {
       dfsan_label next_label = ls[i];
       if (next_label == kInitializingLabel) return kInitializingLabel;
-      else if (next_label == CONST_LABEL) ++shape_ext;
       else if (get_label_info(next_label)->op1 != offset + i) {
         shape = false;
         break;
@@ -307,21 +305,8 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
   if (shape) {
     if (n == 1) return label0;
 
-    uptr load_size = n - shape_ext;
-
-    AOUT("shape: label0: %d %d %d\n", label0, load_size, n);
-
-    dfsan_label ret = label0;
-    if (load_size > 1) {
-      ret = __taint_union(label0, (dfsan_label)load_size, Load, load_size * 8, 0, 0);
-    }
-    if (shape_ext) {
-      for (uptr i = 0; i < shape_ext; ++i) {
-        char *c = (char *)app_for(&ls[load_size + i]);
-        ret = __taint_union(ret, 0, Concat, (load_size + i + 1) * 8, 0, *c);
-      }
-    }
-    return ret;
+    AOUT("shape: label0: %d %d\n", label0, n);
+    return __taint_union(label0, (dfsan_label)n, Load, n * 8, 0, 0);
   }
 
   // fast path 2: all labels are extracted from a n-size label, then return that label
