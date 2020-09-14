@@ -104,7 +104,11 @@ struct expr_equal {
     return lhs.id() == rhs.id();
   }
 };
-typedef std::unordered_set<z3::expr, expr_hash, expr_equal> branch_dep_t;
+typedef std::unordered_set<z3::expr, expr_hash, expr_equal> expr_set_t;
+typedef struct {
+  expr_set_t expr_deps;
+  std::unordered_set<dfsan_label> input_deps;
+} branch_dep_t;
 static std::vector<branch_dep_t*> *__branch_deps;
 
 Flags __dfsan::flags_data;
@@ -867,7 +871,8 @@ add_constraints(dfsan_label label) {
         c = new branch_dep_t();
         __branch_deps->at(off) = c;
       }
-      c->insert(cond);
+      c->input_deps.insert(inputs.begin(), inputs.end());
+      c->expr_deps.insert(cond);
     }
   } catch (z3::exception e) {
     Report("WARNING: adding constraints error: %s\n", e.msg());
@@ -894,11 +899,28 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
 
     __z3_solver.reset();
     // add dependencies
-    branch_dep_t added;
+    // 1. collect additional input deps
+    std::vector<dfsan_label> worklist;
+    worklist.insert(worklist.begin(), inputs.begin(), inputs.end());
+    while (!worklist.empty()) {
+      auto off = worklist.back();
+      worklist.pop_back();
+
+      auto deps = __branch_deps->at(off);
+      if (deps != nullptr) {
+        for (auto i : deps->input_deps) {
+          if (inputs.insert(i).second)
+            worklist.push_back(i);
+        }
+      }
+    }
+    // 2. add constraints
+    expr_set_t added;
     for (auto off : inputs) {
-      auto c = __branch_deps->at(off);
-      if (c) {
-        for (auto &expr : *c) {
+      AOUT("adding offset %d\n", off);
+      auto deps = __branch_deps->at(off);
+      if (deps != nullptr) {
+        for (auto &expr : deps->expr_deps) {
           if (added.insert(expr).second) {
             //AOUT("adding expr: %s\n", expr.to_string().c_str());
             __z3_solver.add(expr);
@@ -938,7 +960,8 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
         c = new branch_dep_t();
         __branch_deps->at(off) = c;
       }
-      c->insert(cond == result);
+      c->input_deps.insert(inputs.begin(), inputs.end());
+      c->expr_deps.insert(cond == result);
     }
 
     // mark as flipped
@@ -1021,22 +1044,34 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
   u8 size = get_label_info(index_label)->size;
   try {
     std::unordered_set<dfsan_label> inputs;
-    z3::expr i = serialize(index_label, inputs);
-    z3::expr r = __z3_context.bv_val(index, size);
+    z3::expr index = serialize(label, inputs);
+    z3::expr result = __z3_context.bv_val((uint64_t)r, size);
 
-    // solve bound constraints
-    dfsan_label_info *bounds = get_label_info(ptr_label);
-    if (flags().trace_bounds) {
-      __z3_solver.reset();
-      // add dependencies
-      branch_dep_t added;
-      for (auto off : inputs) {
-        auto c = __branch_deps->at(off);
-        if (c) {
-          for (auto &expr : *c) {
-            if (added.insert(expr).second) {
-              __z3_solver.add(expr);
-            }
+    __z3_solver.reset();
+    // add dependencies
+    // 1. collect additional input deps
+    std::vector<dfsan_label> worklist;
+    worklist.insert(worklist.begin(), inputs.begin(), inputs.end());
+    while (!worklist.empty()) {
+      auto off = worklist.back();
+      worklist.pop_back();
+
+      auto deps = __branch_deps->at(off);
+      if (deps != nullptr) {
+        for (auto i : deps->input_deps) {
+          if (inputs.insert(i).second)
+            worklist.push_back(i);
+        }
+      }
+    }
+    // 2. add constraints
+    expr_set_t added;
+    for (auto off : inputs) {
+      auto deps = __branch_deps->at(off);
+      if (deps != nullptr) {
+        for (auto &expr : deps->expr_deps) {
+          if (added.insert(expr).second) {
+            __z3_solver.add(expr);
           }
         }
       }
@@ -1152,7 +1187,8 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
         c = new branch_dep_t();
         __branch_deps->at(off) = c;
       }
-      c->insert(i == r);
+      c->input_deps.insert(inputs.begin(), inputs.end());
+      c->expr_deps.insert(index == result);
     }
 
     // mark as visited
