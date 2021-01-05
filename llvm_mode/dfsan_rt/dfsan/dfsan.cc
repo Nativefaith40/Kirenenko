@@ -200,6 +200,20 @@ static inline bool is_kind_of_label(dfsan_label label, u16 kind) {
 
 static bool isZeroOrPowerOfTwo(uint16_t x) { return (x & (x - 1)) == 0; }
 
+static inline branch_dep_t* get_branch_dep(size_t n) {
+  if (tainted.is_stdin && n >= __branch_deps->size()) {
+    __branch_deps->resize(n + 1);
+  }
+  return __branch_deps->at(n);
+}
+
+static inline void set_branch_dep(size_t n, branch_dep_t* dep) {
+  if (tainted.is_stdin && n >= __branch_deps->size()) {
+    __branch_deps->resize(n + 1);
+  }
+  __branch_deps->at(n) = dep;
+}
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u16 size,
                           u64 op1, u64 op2) {
@@ -792,10 +806,10 @@ add_constraints(dfsan_label label) {
     std::unordered_set<dfsan_label> inputs;
     z3::expr cond = serialize(label, inputs);
     for (auto off : inputs) {
-      auto c = __branch_deps->at(off);
+      auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        __branch_deps->at(off) = c;
+        set_branch_dep(off, c);
       }
       c->input_deps.insert(inputs.begin(), inputs.end());
       c->expr_deps.insert(cond);
@@ -832,7 +846,7 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
       auto off = worklist.back();
       worklist.pop_back();
 
-      auto deps = __branch_deps->at(off);
+      auto deps = get_branch_dep(off);
       if (deps != nullptr) {
         for (auto i : deps->input_deps) {
           if (inputs.insert(i).second)
@@ -844,7 +858,7 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
     expr_set_t added;
     for (auto off : inputs) {
       AOUT("adding offset %d\n", off);
-      auto deps = __branch_deps->at(off);
+      auto deps = get_branch_dep(off);
       if (deps != nullptr) {
         for (auto &expr : deps->expr_deps) {
           if (added.insert(expr).second) {
@@ -881,10 +895,10 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
 
     // nested branch
     for (auto off : inputs) {
-      auto c = __branch_deps->at(off);
+      auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        __branch_deps->at(off) = c;
+        set_branch_dep(off, c);
       }
       c->input_deps.insert(inputs.begin(), inputs.end());
       c->expr_deps.insert(cond == result);
@@ -981,7 +995,7 @@ __taint_trace_gep(dfsan_label label, u64 r) {
       auto off = worklist.back();
       worklist.pop_back();
 
-      auto deps = __branch_deps->at(off);
+      auto deps = get_branch_dep(off);
       if (deps != nullptr) {
         for (auto i : deps->input_deps) {
           if (inputs.insert(i).second)
@@ -992,7 +1006,7 @@ __taint_trace_gep(dfsan_label label, u64 r) {
     // 2. add constraints
     expr_set_t added;
     for (auto off : inputs) {
-      auto deps = __branch_deps->at(off);
+      auto deps = get_branch_dep(off);
       if (deps != nullptr) {
         for (auto &expr : deps->expr_deps) {
           if (added.insert(expr).second) {
@@ -1026,10 +1040,10 @@ __taint_trace_gep(dfsan_label label, u64 r) {
 
     // preserve
     for (auto off : inputs) {
-      auto c = __branch_deps->at(off);
+      auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        __branch_deps->at(off) = c;
+        set_branch_dep(off, c);
       }
       c->input_deps.insert(inputs.begin(), inputs.end());
       c->expr_deps.insert(index == result);
