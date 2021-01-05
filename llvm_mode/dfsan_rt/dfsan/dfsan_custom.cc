@@ -55,6 +55,13 @@ using namespace __dfsan;
 #define DECLARE_WEAK_INTERCEPTOR_HOOK(f, ...) \
 SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE void f(__VA_ARGS__);
 
+static inline dfsan_label get_label_for(int fd, off_t offset) {
+  // check if fd is stdin, if so, the label hasn't been pre-allocated
+  if (is_stdin_taint()) return dfsan_create_label(offset);
+  // if fd is a tainted file, the label should have been pre-allocated
+  else return (offset + CONST_OFFSET);
+}
+
 extern "C" {
 SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_stat(const char *path, struct stat *buf, dfsan_label path_label,
@@ -387,9 +394,8 @@ __dfsw_pread(int fd, void *buf, size_t count, off_t offset,
   *ret_label = 0;
   if (ret >= 0) {
     if (taint_get_file(fd)) {
-      dfsan_label label = offset + CONST_OFFSET;
       for (ssize_t i = 0; i < ret; i++) {
-        dfsan_set_label(label + i, (char *)buf + i, 1);
+        dfsan_set_label(get_label_for(fd, offset + i), (char *)buf + i, 1);
       }
       // *ret_label = dfsan_union(0, 0, fsize, sizeof(ret) * 8, offset, 0);
     } else {
@@ -410,9 +416,8 @@ __dfsw_read(int fd, void *buf, size_t count,
   if (ret >= 0) {
     if (taint_get_file(fd)) {
       AOUT("offset = %d, ret = %d\n", offset, ret);
-      dfsan_label label = offset + CONST_OFFSET;
       for(ssize_t i = 0; i < ret; i++) {
-        dfsan_set_label(label + i, (char *)buf + i, 1);
+        dfsan_set_label(get_label_for(fd, offset + i), (char *)buf + i, 1);
       }
       // for (size_t i = ret; i < count; i++)
       //   dfsan_set_label(-1, (char *)buf + i, 1);
@@ -1233,13 +1238,6 @@ SANITIZER_INTERFACE_WEAK_DEF(void, __dfsw___sanitizer_cov_trace_const_cmp8,
                              void) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __dfsw___sanitizer_cov_trace_switch, void) {}
 
-static inline dfsan_label get_label_for(int fd, off_t offset) {
-  // check if fd is stdin, if so, the label hasn't been pre-allocated
-  if (is_stdin_taint()) return dfsan_create_label(offset);
-  // if fd is a tainted file, the label should have been pre-allocated
-  else return (offset + CONST_OFFSET);
-}
-
 SANITIZER_INTERFACE_ATTRIBUTE int
 __dfsw_open(const char *path, int oflags, dfsan_label path_label,
             dfsan_label flag_label, dfsan_label *va_labels,
@@ -1512,9 +1510,8 @@ __dfsw_getutxent(dfsan_label *ret_label) {
   *ret_label = 0;
   if (ret && is_utmp_taint()) {
     off_t offset = get_utmp_offset();
-    dfsan_label label = offset + CONST_OFFSET;
     for (size_t i = 0; i < sizeof(struct utmpx); i++) {
-      dfsan_set_label(label + i, (char *)ret + i, 1);
+      dfsan_set_label(get_label_for(-1, offset + i), (char *)ret + i, 1);
     }
     set_utmp_offset(offset + sizeof(struct utmpx));
   }
@@ -1530,11 +1527,10 @@ char *__dfsw_fgets(char *s, int size, FILE *stream, dfsan_label s_label,
   char *ret = fgets(s, size, stream);
   if (ret) {
     if (taint_get_file(fd)) {
-      dfsan_label label = offset + CONST_OFFSET;
       // including terminating \0
       for (size_t i = 0; i < strlen(ret); i++) {
         char *buf = s + i;
-        dfsan_set_label(label + i, buf, 1);
+        dfsan_set_label(get_label_for(fd, offset + i), buf, 1);
       }
       dfsan_set_label(0, s + strlen(ret), 1);
       // for(int i = strlen(ret) + 1; i < size; i++) {
@@ -2076,9 +2072,8 @@ __dfsw_mmap(void *start, size_t length, int prot, int flags, int fd,
            ret, offset, length);
       size_t tainted_length = (offset + length) > fsize ? (fsize - offset)
                                                         : length;
-      dfsan_label label = offset + CONST_OFFSET;
       for (size_t i = 0; i < tainted_length; i++)
-        dfsan_set_label(label + i, (char *)ret + i, 1);
+        dfsan_set_label(get_label_for(fd, offset + i), (char *)ret + i, 1);
       for (size_t i = tainted_length; i < length; i++)
         dfsan_set_label(-1, (char *)ret + i, 1);
     } else {
