@@ -345,6 +345,20 @@ void *__dfsw_memcpy(void *dest, const void *src, size_t n,
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
+void *__dfsw_memmove(void *dest, const void *src, size_t n,
+                     dfsan_label dest_label, dfsan_label src_label,
+                     dfsan_label n_label, dfsan_label *ret_label) {
+  dfsan_label tmp[n];
+  dfsan_label *sdest = shadow_for(dest);
+  const dfsan_label *ssrc = shadow_for(src);
+  internal_memcpy((void *)tmp, (const void *)ssrc, n * sizeof(dfsan_label));
+  void *ret = internal_memmove(dest, src, n);
+  internal_memcpy((void *)sdest, (const void *)tmp, n * sizeof(dfsan_label));
+  *ret_label = dest_label;
+  return ret;
+}
+
+SANITIZER_INTERFACE_ATTRIBUTE
 void *__dfsw_memset(void *s, int c, size_t n,
                     dfsan_label s_label, dfsan_label c_label,
                     dfsan_label n_label, dfsan_label *ret_label) {
