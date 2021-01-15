@@ -28,17 +28,17 @@
 #include <string.h>
 #include <unistd.h>
 
-static u8 *obj_path;       /* Path to runtime libraries         */
-static u8 **cc_params;     /* Parameters passed to the real CC  */
+static char *obj_path;     /* Path to runtime libraries         */
+static char **cc_params;   /* Parameters passed to the real CC  */
 static u32 cc_par_cnt = 1; /* Param count, including argv0      */
 static u8 clang_type = CLANG_FAST_TYPE;
 static u8 is_cxx = 0;
 
 /* Try to find the runtime libraries. If that fails, abort. */
-static void find_obj(u8 *argv0) {
+static void find_obj(const char *argv0) {
 
-  u8 *slash, *tmp;
-  u8 path[4096];
+  char *slash, *tmp;
+  char path[4096];
 
   if (!realpath(argv0, path)) {
     FATAL("Cannot get real path of the compiler (%s): %s", argv0, strerror(errno));
@@ -47,7 +47,7 @@ static void find_obj(u8 *argv0) {
   slash = strrchr(path, '/');
 
   if (slash) {
-    u8 *dir;
+    char *dir;
     *slash = 0;
     dir = ck_strdup(path);
     *slash = '/';
@@ -67,7 +67,7 @@ static void find_obj(u8 *argv0) {
 }
 
 static void check_type(char *name) {
-  u8 *use_pin = getenv("USE_PIN");
+  char *use_pin = getenv("USE_PIN");
   if (use_pin) {
     clang_type = CLANG_PIN_TYPE;
   } else {
@@ -78,13 +78,13 @@ static void check_type(char *name) {
   }
 }
 
-static u8 check_if_assembler(u32 argc, const char **argv) {
+static u8 check_if_assembler(u32 argc, char **argv) {
   /* Check if a file with an assembler extension ("s" or "S") appears in argv */
 
   while (--argc) {
-    u8 *cur = *(++argv);
+    char *cur = *(++argv);
 
-    const u8 *ext = strrchr(cur, '.');
+    char *ext = strrchr(cur, '.');
     if (ext && (!strcmp(ext + 1, "s") || !strcmp(ext + 1, "S"))) {
       return 1;
     }
@@ -94,7 +94,6 @@ static u8 check_if_assembler(u32 argc, const char **argv) {
 }
 
 static void add_runtime() {
-  // cc_params[cc_par_cnt++] = "-I/${HOME}/clang+llvm/include/c++/v1";
   if (clang_type == CLANG_DFSAN_TYPE) {
     cc_params[cc_par_cnt++] = "-Wl,--whole-archive";
     cc_params[cc_par_cnt++] = alloc_printf("%s/lib/libdfsan_rt-x86_64.a", obj_path);
@@ -107,8 +106,16 @@ static void add_runtime() {
     cc_params[cc_par_cnt++] = alloc_printf("%s/lib/pin_stub.o", obj_path);
   }
 
-  if (!is_cxx)
-    cc_params[cc_par_cnt++] = "-lstdc++";
+  if (is_cxx && !getenv("KO_USE_NATIVE_LIBCXX")) {
+    cc_params[cc_par_cnt++] = "-Wl,--whole-archive";
+    cc_params[cc_par_cnt++] = alloc_printf("%s/lib/libc++.a", obj_path);
+    cc_params[cc_par_cnt++] = alloc_printf("%s/lib/libc++abi.a", obj_path);
+    cc_params[cc_par_cnt++] = "-Wl,--no-whole-archive";
+  } else {
+    cc_params[cc_par_cnt++] = "-lc++";
+    cc_params[cc_par_cnt++] = "-lc++abi";
+    // cc_params[cc_par_cnt++] = "-lstdc++";
+  }
   cc_params[cc_par_cnt++] = "-lrt";
 
   cc_params[cc_par_cnt++] = "-Wl,--no-as-needed";
@@ -117,7 +124,9 @@ static void add_runtime() {
   cc_params[cc_par_cnt++] = "-lpthread";
   cc_params[cc_par_cnt++] = "-lm";
   cc_params[cc_par_cnt++] = "-lz3";
-  cc_params[cc_par_cnt++] = "-lz";
+  if (!getenv("KO_NO_NATIVE_ZLIB")) {
+    cc_params[cc_par_cnt++] = "-lz";
+  }
 }
 
 static void add_dfsan_pass() {
@@ -128,14 +137,19 @@ static void add_dfsan_pass() {
   cc_params[cc_par_cnt++] = "-mllvm";
   cc_params[cc_par_cnt++] =
       alloc_printf("-taint-abilist=%s/rules/dfsan_abilist.txt", obj_path);
-  cc_params[cc_par_cnt++] = "-mllvm";
-  cc_params[cc_par_cnt++] =
-      alloc_printf("-taint-abilist=%s/rules/zlib_abilist.txt", obj_path);
+
+  if (!getenv("KO_NO_NATIVE_ZLIB")) {
+    cc_params[cc_par_cnt++] = "-mllvm";
+    cc_params[cc_par_cnt++] =
+        alloc_printf("-taint-abilist=%s/rules/zlib_abilist.txt", obj_path);
+  }
+
   if (getenv("KO_TRACE_FP")) {
     cc_params[cc_par_cnt++] = "-mllvm";
     cc_params[cc_par_cnt++] = "-taint-trace-float-pointer";
   }
-  if (is_cxx) {
+
+  if (is_cxx && getenv("KO_USE_NATIVE_LIBCXX")) {
     cc_params[cc_par_cnt++] = "-mllvm";
     cc_params[cc_par_cnt++] =
         alloc_printf("-taint-abilist=%s/rules/abilibstdc++.txt", obj_path);
@@ -146,7 +160,7 @@ static void edit_params(u32 argc, char **argv) {
 
   u8 fortify_set = 0, asan_set = 0, x_set = 0, maybe_linking = 1, bit_mode = 0;
   u8 maybe_assembler = 0;
-  u8 *name;
+  char *name;
 
   cc_params = ck_alloc((argc + 128) * sizeof(u8 *));
 
@@ -158,11 +172,11 @@ static void edit_params(u32 argc, char **argv) {
   check_type(name);
 
   if (is_cxx) {
-    u8 *alt_cxx = getenv("KO_CXX");
-    cc_params[0] = alt_cxx ? alt_cxx : (u8 *)"clang++";
+    char *alt_cxx = getenv("KO_CXX");
+    cc_params[0] = alt_cxx ? alt_cxx : "clang++";
   } else {
-    u8 *alt_cc = getenv("KO_CC");
-    cc_params[0] = alt_cc ? alt_cc : (u8 *)"clang";
+    char *alt_cc = getenv("KO_CC");
+    cc_params[0] = alt_cc ? alt_cc : "clang";
   }
 
   maybe_assembler = check_if_assembler(argc, argv);
@@ -172,7 +186,7 @@ static void edit_params(u32 argc, char **argv) {
     maybe_linking = 0;
 
   while (--argc) {
-    u8 *cur = *(++argv);
+    char *cur = *(++argv);
     // FIXME
     if (!strcmp(cur, "-O1") || !strcmp(cur, "-O2") || !strcmp(cur, "-O3")) {
       //continue;
@@ -201,6 +215,11 @@ static void edit_params(u32 argc, char **argv) {
       continue;
 
     cc_params[cc_par_cnt++] = cur;
+  }
+
+  if (getenv("KO_CONFIG")) {
+    cc_params[cc_par_cnt] = NULL;
+    return;
   }
 
   if (!maybe_assembler) {
@@ -265,15 +284,9 @@ static void edit_params(u32 argc, char **argv) {
     //cc_params[cc_par_cnt++] = "-funroll-loops";
   }
 
-  if (0 && is_cxx) {
-    // FIXME: or use the same header
-    // cc_params[cc_par_cnt++] = "-I/path-to-llvm/include/c++/v1";
-    cc_params[cc_par_cnt++] = alloc_printf("-L%s/lib/libcxx_track/", obj_path);
+  if (is_cxx && !getenv("KO_USE_NATIVE_LIBCXX")) {
+    //cc_params[cc_par_cnt++] = alloc_printf("-I%s/include/c++/v1/", obj_path);
     cc_params[cc_par_cnt++] = "-stdlib=libc++";
-    cc_params[cc_par_cnt++] = "-Wl,--start-group";
-    cc_params[cc_par_cnt++] = "-lc++abi";
-    cc_params[cc_par_cnt++] = "-lc++";
-    cc_params[cc_par_cnt++] = "-Wl,--end-group";
   }
 
   if (maybe_linking) {
