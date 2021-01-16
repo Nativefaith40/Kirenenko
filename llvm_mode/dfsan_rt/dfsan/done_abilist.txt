@@ -469,6 +469,6 @@ fun:__taint_*=uninstrumented
 fun:__taint_*=discard
 
 # Don't add extra parameters to the Fuzzer callback.
-fun:LLVMFuzzerTestOneInput=uninstrumented
+#fun:LLVMFuzzerTestOneInput=uninstrumented
 fun:__afl_manual_init=uninstrumented
 fun:__afl_manual_init=discard
