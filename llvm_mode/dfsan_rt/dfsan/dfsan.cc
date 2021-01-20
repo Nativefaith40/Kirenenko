@@ -883,10 +883,14 @@ add_constraints(dfsan_label label) {
       auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        set_branch_dep(off, c);
+        if (c == nullptr) {
+          Report("WARNING: out of memory\n");
+        } else {
+          set_branch_dep(off, c);
+          c->input_deps.insert(inputs.begin(), inputs.end());
+          c->expr_deps.insert(cond);
+        }
       }
-      c->input_deps.insert(inputs.begin(), inputs.end());
-      c->expr_deps.insert(cond);
     }
   } catch (z3::exception e) {
     Report("WARNING: adding constraints error: %s\n", e.msg());
@@ -911,9 +915,7 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
     }
 #endif
 
-    __z3_solver.reset();
-    // add dependencies
-    // 1. collect additional input deps
+    // collect additional input deps
     std::vector<dfsan_label> worklist;
     worklist.insert(worklist.begin(), inputs.begin(), inputs.end());
     while (!worklist.empty()) {
@@ -928,43 +930,46 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
         }
       }
     }
-    // 2. add constraints
-    expr_set_t added;
-    for (auto off : inputs) {
-      AOUT("adding offset %d\n", off);
-      auto deps = get_branch_dep(off);
-      if (deps != nullptr) {
-        for (auto &expr : deps->expr_deps) {
-          if (added.insert(expr).second) {
-            //AOUT("adding expr: %s\n", expr.to_string().c_str());
-            __z3_solver.add(expr);
-          }
-        }
-      }
-    }
 
-    //AOUT("%s\n", cond.to_string().c_str());
+    __z3_solver.reset();
+        //AOUT("%s\n", cond.to_string().c_str());
     __z3_solver.add(cond != result);
     z3::check_result res = __z3_solver.check();
     if (res == z3::sat) {
-      AOUT("branch solved\n");
-      z3::model m = __z3_solver.get_model();
-      generate_input(m);
+#if OPTIMISTIC
+      z3::model m_opt = __z3_solver.get_model();
+#endif
+      __z3_solver.push();
+
+      // 2. add constraints
+      expr_set_t added;
+      for (auto off : inputs) {
+        //AOUT("adding offset %d\n", off);
+        auto deps = get_branch_dep(off);
+        if (deps != nullptr) {
+          for (auto &expr : deps->expr_deps) {
+            if (added.insert(expr).second) {
+              //AOUT("adding expr: %s\n", expr.to_string().c_str());
+              __z3_solver.add(expr);
+            }
+          }
+        }
+      }
+
+      res = __z3_solver.check();
+      if (res == z3::sat) {
+        AOUT("branch solved\n");
+        z3::model m = __z3_solver.get_model();
+        generate_input(m);
+      } else {
+#if OPTIMISTIC
+        generate_input(m_opt);
+#endif
+      }
     } else if (res == z3::unsat) {
       AOUT("branch not solvable @%p\n", addr);
       //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
       //AOUT("  tree_size = %d", __dfsan_label_info[label].tree_size);
-
-      // optimistic?
-#if OPTIMISTIC
-      z3::solver solver = z3::solver(__z3_context, "QF_BV");
-      solver.set("timeout", 5000U);
-      solver.add(cond != result);
-      if (solver.check() == z3::sat) {
-        z3::model m = solver.get_model();
-        generate_input(m);
-      }
-#endif
     }
 
     // nested branch
@@ -972,10 +977,14 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
       auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        set_branch_dep(off, c);
+        if (c == nullptr) {
+          Report("WARNING: out of memory\n");
+        } else {
+          set_branch_dep(off, c);
+          c->input_deps.insert(inputs.begin(), inputs.end());
+          c->expr_deps.insert(cond == result);
+        }
       }
-      c->input_deps.insert(inputs.begin(), inputs.end());
-      c->expr_deps.insert(cond == result);
     }
 
     // mark as flipped
@@ -1054,16 +1063,13 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
   AOUT("tainted GEP index: %lld = %d, ne: %lld, es: %lld, offset: %lld\n",
       index, index_label, num_elems, elem_size, current_offset);
 
-  void *addr = __builtin_return_address(0);
-  u8 size = get_label_info(index_label)->size;
+  u8 size = get_label_info(label)->size;
   try {
     std::unordered_set<dfsan_label> inputs;
     z3::expr index = serialize(label, inputs);
     z3::expr result = __z3_context.bv_val((uint64_t)r, size);
 
-    __z3_solver.reset();
-    // add dependencies
-    // 1. collect additional input deps
+    // collect additional input deps
     std::vector<dfsan_label> worklist;
     worklist.insert(worklist.begin(), inputs.begin(), inputs.end());
     while (!worklist.empty()) {
@@ -1078,120 +1084,43 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
         }
       }
     }
-    // 2. add constraints
-    expr_set_t added;
-    for (auto off : inputs) {
-      auto deps = get_branch_dep(off);
-      if (deps != nullptr) {
-        for (auto &expr : deps->expr_deps) {
-          if (added.insert(expr).second) {
-            __z3_solver.add(expr);
+
+    __z3_solver.reset();
+    __z3_solver.add(index > result);
+    z3::check_result res = __z3_solver.check();
+
+    //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
+    if (res == z3::sat) {
+#if OPTIMISTIC
+      z3::model m_opt = __z3_solver.get_model();
+#endif
+      __z3_solver.push();
+
+      // 2. add constraints
+      expr_set_t added;
+      for (auto off : inputs) {
+        auto deps = get_branch_dep(off);
+        if (deps != nullptr) {
+          for (auto &expr : deps->expr_deps) {
+            if (added.insert(expr).second) {
+              __z3_solver.add(expr);
+            }
           }
         }
       }
 
-      // first, check against fixed array bounds if available
-      if (num_elems > 0) {
-        z3::expr ne = __z3_context.bv_val(num_elems, 64);
-        __z3_solver.push();
-        __z3_solver.add(z3::uge(z3::zext(i, 64 - size), ne));
-        z3::check_result res = __z3_solver.check();
-        if (res == z3::sat) {
-          AOUT("\tindex >= %lld solved @%p\n", num_elems, addr);
-          z3::model m = __z3_solver.get_model();
-          generate_input(m);
-        } else if (res == z3::unsat) {
-          AOUT("\tindex >= %lld not possible\n", num_elems);
-
-          // optimistic?
-        #if 0 //OPTIMISTIC
-          z3::solver solver = z3::solver(__z3_context, "QF_BV");
-          solver.set("timeout", 5000U);
-          solver.add(z3::uge(z3::zext(i, 64 - size), ne));
-          if (solver.check() == z3::sat) {
-            z3::model m = solver.get_model();
-            generate_input(m);
-          }
-        #endif
-        }
-        __z3_solver.pop();
-
-        __z3_solver.add(i < 0);
-        res = __z3_solver.check();
-        if (res == z3::sat) {
-          AOUT("\tindex < 0 solved @%p\n", addr);
-          z3::model m = __z3_solver.get_model();
-          generate_input(m);
-        } else if (res == z3::unsat) {
-          AOUT("\tindex < 0 not possible\n");
-
-          // optimistic?
-        #if 0 //OPTIMISTIC
-          z3::solver solver = z3::solver(__z3_context, "QF_BV");
-          solver.set("timeout", 5000U);
-          solver.add(i < 0);
-          if (solver.check() == z3::sat) {
-            z3::model m = solver.get_model();
-            generate_input(m);
-          }
-        #endif
-        }
+      res = __z3_solver.check();
+      if (res == z3::sat) {
+        AOUT("\tindex > %lld solved\n", r);
+        z3::model m = __z3_solver.get_model();
+        generate_input(m);
+      } else {
+#if OPTIMISTIC
+        generate_input(m_opt);
+#endif
       }
-      // if the array is not with fixed size, check bound info
-      else if (bounds->op == Alloca) {
-        z3::expr es = __z3_context.bv_val(elem_size, 64);
-        z3::expr co = __z3_context.bv_val(current_offset, 64);
-        z3::expr p = __z3_context.bv_val(ptr, 64);
-        z3::expr np = z3::sext(i, 64 - size) * es + co + p;
-        z3::expr lb = __z3_context.bv_val((uint64_t)bounds->op1, 64);
-        z3::expr ub = __z3_context.bv_val((uint64_t)bounds->op2, 64);
-
-        // check upper bound
-        __z3_solver.push();
-        __z3_solver.add(uge(np, ub));
-        z3::check_result res = __z3_solver.check();
-        if (res == z3::sat) {
-          AOUT("\tptr >= %p solved @%p\n", bounds->op2, addr);
-          z3::model m = __z3_solver.get_model();
-          generate_input(m);
-        } else if (res == z3::unsat) {
-          AOUT("\tptr >= %p not possible\n", bounds->op2);
-
-          // optimistic?
-        #if 0//OPTIMISTIC
-          z3::solver solver = z3::solver(__z3_context, "QF_BV");
-          solver.set("timeout", 5000U);
-          solver.add(uge(np, ub));
-          if (solver.check() == z3::sat) {
-            z3::model m = solver.get_model();
-            generate_input(m);
-          }
-        #endif
-        }
-        __z3_solver.pop();
-
-        // check lower bound
-        __z3_solver.add(ult(np, lb));
-        res = __z3_solver.check();
-        if (res == z3::sat) {
-          AOUT("\tptr < %p solved @%p\n", bounds->op1, addr);
-          z3::model m = __z3_solver.get_model();
-          generate_input(m);
-        } else if (res == z3::unsat) {
-          AOUT("\tptr < %p not possible\n", bounds->op1);
-
-          // optimistic?
-        #if 0//OPTIMISTIC
-          z3::solver solver = z3::solver(__z3_context, "QF_BV");
-          solver.set("timeout", 5000U);
-          solver.add(ult(np, lb));
-          if (solver.check() == z3::sat) {
-            z3::model m = solver.get_model();
-            generate_input(m);
-          }
-        #endif
-        }
-      }
+    } else if (res == z3::unsat) {
+      AOUT("\tindex > %lld not possible\n", r);
     }
 
     // always preserve
@@ -1199,10 +1128,14 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
       auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        set_branch_dep(off, c);
+        if (c == nullptr) {
+          Report("WARNING: out of memory\n");
+        } else {
+          set_branch_dep(off, c);
+          c->input_deps.insert(inputs.begin(), inputs.end());
+          c->expr_deps.insert(index == result);
+        }
       }
-      c->input_deps.insert(inputs.begin(), inputs.end());
-      c->expr_deps.insert(index == result);
     }
 
     // mark as visited
@@ -1362,7 +1295,7 @@ static void InitializeTaintFile() {
   }
 
   // create branch dependencies
-  __branch_deps = new std::vector<branch_dep_t*>(tainted.size);
+  __branch_deps = new std::vector<branch_dep_t*>(tainted.size, nullptr);
 }
 
 static void InitializeFlags() {
