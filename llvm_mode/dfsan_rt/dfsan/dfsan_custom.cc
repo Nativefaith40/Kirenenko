@@ -295,7 +295,7 @@ SANITIZER_INTERFACE_ATTRIBUTE void *__dfsw_calloc(size_t nmemb, size_t size,
                                                   dfsan_label size_label,
                                                   dfsan_label *ret_label) {
   void *p = calloc(nmemb, size);
-  dfsan_set_label(0, p, nmemb * size);
+  // dfsan_set_label(0, p, nmemb * size);
   *ret_label = 0;
   return p;
 }
@@ -306,7 +306,7 @@ void *__dfsw___libc_calloc(size_t nmemb, size_t size,
                            dfsan_label size_label,
                            dfsan_label *ret_label) {
   void *p = calloc(nmemb, size);
-  dfsan_set_label(0, p, nmemb * size);
+  // dfsan_set_label(0, p, nmemb * size);
   *ret_label = 0;
   return p;
 }
@@ -1617,10 +1617,10 @@ __dfsw_realloc(void *ptr, size_t new_size,
   size_t size = malloc_usable_size(ptr);
   if (size > new_size) size = new_size;
   void *ret = realloc(ptr, new_size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
-  internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+  // internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
   if (ret != ptr) {
-    internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
+    internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+    // internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
     *ret_label = 0;
   } else *ret_label = ptr_label;
   return ret;
@@ -1633,10 +1633,10 @@ __dfsw___libc_realloc(void *ptr, size_t new_size,
   size_t size = malloc_usable_size(ptr);
   if (size > new_size) size = new_size;
   void *ret = realloc(ptr, new_size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
-  internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+  // internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * new_size);
   if (ret != ptr) {
-    internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
+    internal_memcpy(shadow_for(ret), shadow_for(ptr), sizeof(dfsan_label) * size);
+    // internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
     *ret_label = 0;
   } else *ret_label = ptr_label;
   return ret;
@@ -1648,7 +1648,7 @@ void *__dfsw_malloc(size_t size, dfsan_label size_label,
   if (size_label)
     AOUT("malloc with tainted length: %d = %lld\n", size_label, size);
   void *ret = malloc(size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+  // internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
   *ret_label = 0;
   return ret;
 }
@@ -1657,22 +1657,22 @@ SANITIZER_INTERFACE_ATTRIBUTE
 void *__dfsw___libc_malloc(size_t size, dfsan_label size_label,
                            dfsan_label *ret_label) {
   void *ret = malloc(size);
-  internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
+  // internal_memset(shadow_for(ret), 0, sizeof(dfsan_label) * size);
   *ret_label = 0;
   return ret;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE void __dfsw_free(void *ptr, dfsan_label ptr_label) {
-  size_t size = malloc_usable_size(ptr);
+  // size_t size = malloc_usable_size(ptr);
   free(ptr);
-  internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
+  // internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
 void __dfsw___libc_free(void *ptr, dfsan_label ptr_label) {
-  size_t size = malloc_usable_size(ptr);
+  // size_t size = malloc_usable_size(ptr);
   free(ptr);
-  internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
+  // internal_memset(shadow_for(ptr), 0, sizeof(dfsan_label) * size);
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE int

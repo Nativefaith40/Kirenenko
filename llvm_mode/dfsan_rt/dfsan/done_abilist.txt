@@ -89,6 +89,21 @@ fun:__cxa_get_exception_ptr=uninstrumented
 fun:__cxa_get_exception_ptr=discard
 fun:__cxa_throw=uninstrumented
 fun:__cxa_throw=discard
+fun:__dynamic_cast=uninstrumented
+fun:__dynamic_cast=discard
+
+fun:_Unwind_GetLanguageSpecificData=uninstrumented
+fun:_Unwind_GetLanguageSpecificData=discard
+fun:_Unwind_GetIP=uninstrumented
+fun:_Unwind_GetIP=discard
+fun:_Unwind_GetRegionStart=uninstrumented
+fun:_Unwind_GetRegionStart=discard
+fun:_Unwind_RaiseException=uninstrumented
+fun:_Unwind_RaiseException=discard
+fun:_Unwind_SetGR=uninstrumented
+fun:_Unwind_SetGR=discard
+fun:_Unwind_SetIP=uninstrumented
+fun:_Unwind_SetIP=discard
 
 fun:main=uninstrumented
 fun:main=discard
@@ -333,8 +348,8 @@ fun:sigaction=custom
 fun:gettimeofday=custom
 
 # sprintf-like
-fun:sprintf=custom
-fun:snprintf=custom
+#fun:sprintf=custom
+#fun:snprintf=custom
 
 # TODO: custom
 fun:asprintf=discard
