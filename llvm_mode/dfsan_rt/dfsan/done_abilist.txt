@@ -58,6 +58,9 @@ fun:_ZTVN10__cxxabiv117__class_type_infoE=discard
 fun:_ZTVN10__cxxabiv120__si_class_type_infoE=uninstrumented
 fun:_ZTVN10__cxxabiv120__si_class_type_infoE=discard
 
+fun:_ZNSt3__16vectorIjNS_9allocatorIjEEE21__push_back_slow_pathIRKjEEvOT_=uninstrumented
+fun:_ZNSt3__16vectorIjNS_9allocatorIjEEE21__push_back_slow_pathIRKjEEvOT_=discard
+
 fun:_ZdaPv=uninstrumented
 fun:_ZdaPv=discard
 fun:_ZdlPv=uninstrumented
