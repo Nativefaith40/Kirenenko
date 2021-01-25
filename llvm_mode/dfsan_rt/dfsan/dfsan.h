@@ -25,17 +25,16 @@ using __sanitizer::u32;
 using __sanitizer::u16;
 using __sanitizer::u8;
 
-#if 0
-# define AOUT(...)
-#else
-# define AOUT(...)                                       \
+extern bool print_debug;
+
+# define AOUT(...)                                      \
   do {                                                  \
-    if (1)  {                                           \
+    if (print_debug)  {                                 \
       Printf("[RT] (%s:%d) ", __FUNCTION__, __LINE__);  \
       Printf(__VA_ARGS__);                              \
     }                                                   \
   } while(false)
-#endif
+
 // Copy declarations from public sanitizer/dfsan_interface.h header here.
 typedef u32 dfsan_label;
 

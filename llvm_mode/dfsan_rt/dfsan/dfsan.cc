@@ -107,6 +107,7 @@ typedef struct {
 static std::vector<branch_dep_t*> *__branch_deps;
 
 Flags __dfsan::flags_data;
+bool print_debug;
 
 SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL dfsan_label __dfsan_retval_tls;
 SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL dfsan_label __dfsan_arg_tls[64];
@@ -1295,6 +1296,8 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   MmapFixedNoAccess(UnusedAddr(), AppAddr() - UnusedAddr());
   MmapFixedNoReserve(HashTableAddr(), hashtable_size);
   __taint::allocator_init(HashTableAddr(), HashTableAddr() + hashtable_size);
+
+  print_debug = flags().debug;
 
   InitializeTaintFile();
 
