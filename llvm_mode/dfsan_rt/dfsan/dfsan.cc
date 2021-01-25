@@ -112,6 +112,7 @@ typedef struct {
 static std::vector<branch_dep_t*> *__branch_deps;
 
 Flags __dfsan::flags_data;
+bool print_debug;
 
 // The size of TLS variables. These constants must be kept in sync with the ones
 // in Taint.cc
@@ -1356,6 +1357,7 @@ static void dfsan_fini() {
 
 static void dfsan_init(int argc, char **argv, char **envp) {
   InitializeFlags();
+  print_debug = flags().debug;
 
   ::InitializePlatformEarly();
   MmapFixedSuperNoReserve(ShadowAddr(), UnusedAddr() - ShadowAddr());
