@@ -321,7 +321,7 @@ dfsan_label __taint_union_load(const dfsan_label *ls, uptr n) {
       }
       offset += info->size;
     }
-    if (get_label_info(parent)->size == offset) {
+    if (get_label_info(parent)->size == offset && offset == n * 8) {
       AOUT("Fast path (2): all labels are extracts: %u\n", parent);
       return parent;
     }
