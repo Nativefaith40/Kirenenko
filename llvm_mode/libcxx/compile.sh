@@ -3,7 +3,7 @@
 BIN_PATH=$(readlink -f "$0")
 ROOT_DIR=$(dirname $(dirname $(dirname $BIN_PATH)))
 
-LLVM_VERSION=7.0.0
+LLVM_VERSION=6.0.1
 
 NINJA_B=`which ninja 2>/dev/null`
 
@@ -19,56 +19,36 @@ CUR_DIR=`pwd`
 CLANG_SRC=${CUR_DIR}/llvm_src
 
 if [ ! -d $CLANG_SRC ]; then
-wget http://releases.llvm.org/${LLVM_VERSION}/llvm-${LLVM_VERSION}.src.tar.xz
-wget http://releases.llvm.org/${LLVM_VERSION}/cfe-${LLVM_VERSION}.src.tar.xz
-wget http://releases.llvm.org/${LLVM_VERSION}/compiler-rt-${LLVM_VERSION}.src.tar.xz
-wget http://releases.llvm.org/${LLVM_VERSION}/libcxx-${LLVM_VERSION}.src.tar.xz
-wget http://releases.llvm.org/${LLVM_VERSION}/libcxxabi-${LLVM_VERSION}.src.tar.xz
-wget http://releases.llvm.org/${LLVM_VERSION}/libunwind-${LLVM_VERSION}.src.tar.xz
-wget http://releases.llvm.org/${LLVM_VERSION}/clang-tools-extra-${LLVM_VERSION}.src.tar.xz
+  wget http://releases.llvm.org/${LLVM_VERSION}/llvm-${LLVM_VERSION}.src.tar.xz
+  wget http://releases.llvm.org/${LLVM_VERSION}/libcxx-${LLVM_VERSION}.src.tar.xz
+  wget http://releases.llvm.org/${LLVM_VERSION}/libcxxabi-${LLVM_VERSION}.src.tar.xz
+  #wget http://releases.llvm.org/${LLVM_VERSION}/libunwind-${LLVM_VERSION}.src.tar.xz
 
-
-rm -rf $CLANG_SRC
-
-tar -Jxf ${CUR_DIR}/llvm-${LLVM_VERSION}.src.tar.xz 
-mv llvm-${LLVM_VERSION}.src $CLANG_SRC
-
-cd ${CLANG_SRC}/tools
-tar -Jxf ${CUR_DIR}/cfe-${LLVM_VERSION}.src.tar.xz 
-mv cfe-${LLVM_VERSION}.src clang
-cd ${CLANG_SRC}/tools/clang/tools
-tar -Jxf ${CUR_DIR}/clang-tools-extra-${LLVM_VERSION}.src.tar.xz 
-mv clang-tools-extra-${LLVM_VERSION}.src extra
-cd ${CLANG_SRC}/projects
-tar -Jxvf ${CUR_DIR}/compiler-rt-${LLVM_VERSION}.src.tar.xz
-mv compiler-rt-${LLVM_VERSION}.src compiler-rt
-tar -Jxvf ${CUR_DIR}/libcxx-${LLVM_VERSION}.src.tar.xz
-mv libcxx-${LLVM_VERSION}.src libcxx
-tar -Jxvf ${CUR_DIR}/libcxxabi-${LLVM_VERSION}.src.tar.xz
-mv libcxxabi-${LLVM_VERSION}.src libcxxabi
-tar -Jxvf ${CUR_DIR}/libunwind-${LLVM_VERSION}.src.tar.xz
-mv libunwind-${LLVM_VERSION}.src libunwind
-cp ./libcxxabi/include/*  ./libcxx/include
-
-rm -rf ${CUR_DIR}/*.tar.xz
+  tar -Jxf ${CUR_DIR}/llvm-${LLVM_VERSION}.src.tar.xz
+  mv llvm-${LLVM_VERSION}.src $CLANG_SRC
+  tar -Jxf ${CUR_DIR}/libcxx-${LLVM_VERSION}.src.tar.xz
+  mv libcxx-${LLVM_VERSION}.src libcxx
+  tar -Jxf ${CUR_DIR}/libcxxabi-${LLVM_VERSION}.src.tar.xz
+  mv libcxxabi-${LLVM_VERSION}.src libcxxabi
+  #tar -Jxf ${CUR_DIR}/libunwind-${LLVM_VERSION}.src.tar.xz
+  #mv libunwind-${LLVM_VERSION}.src libunwind
 fi
 
-cd $CUR_DIR
+mkdir -p build_taint
+cd build_taint
+rm -rf *
 
-rm -rf build_*
+export KO_CONFIG=1
+cmake -G Ninja -DLLVM_TARGETS_TO_BUILD=X86 -DCMAKE_BUILD_TYPE=Release \
+    -DLIBCXXABI_ENABLE_SHARED=OFF -DLIBCXX_ENABLE_SHARED=OFF \
+    -DLIBCXX_CXX_ABI=libcxxabi -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi" \
+    -DCMAKE_C_COMPILER=${ROOT_DIR}/bin/ko-clang \
+    -DCMAKE_CXX_COMPILER=${ROOT_DIR}/bin/ko-clang++ \
+    -DLIBCXX_CXX_ABI_INCLUDE_PATHS=../libcxxabi/include \
+    -DLLVM_DISTRIBUTION_COMPONENTS="cxx;cxxabi" \
+    -DCMAKE_INSTALL_PREFIX=${ROOT_DIR}/bin \
+    ../llvm_src/
 
-mkdir build_fast && cd build_fast/
-CC=clang CXX=clang++ cmake -G Ninja ../llvm_src  -DLIBCXXABI_ENABLE_SHARED=NO -DLIBCXX_ENABLE_SHARED=NO -DLIBCXX_CXX_ABI=libcxxabi 
-#-DLLVM_FORCE_USE_OLD_TOOLCHAIN=YES 
-ninja cxx cxxabi
+unset KO_CONFIG
+ninja distribution
 
-cd ..
-mkdir build_track && cd build_track/
-
-CC=${ROOT_DIR}/bin/angora-clang CXX=${ROOT_DIR}/bin/angora-clang++ cmake -G Ninja ../llvm_src  -DLIBCXXABI_ENABLE_SHARED=NO -DLIBCXX_ENABLE_SHARED=NO -DLIBCXX_CXX_ABI=libcxxabi 
-#-DLLVM_FORCE_USE_OLD_TOOLCHAIN=YES 
-USE_DFSAN=1 ninja cxx cxxabi
-
-# @echo "if cxxabi.h not found, try: cp ./libcxxabi/include/*  ./libcxx/include, or -I"
-
-@echo "Please install them again to overwrite old ones (by CMake).
