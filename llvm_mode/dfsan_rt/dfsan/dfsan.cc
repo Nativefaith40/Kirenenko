@@ -900,7 +900,7 @@ add_constraints(dfsan_label label) {
   get_label_info(label)->flags |= B_FLIPPED;
 }
 
-static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
+static void __solve_cond(dfsan_label label, z3::expr &result, bool add_nested, void *addr) {
   if ((get_label_info(label)->flags & B_FLIPPED))
     return;
 
@@ -974,16 +974,18 @@ static void __solve_cond(dfsan_label label, z3::expr &result, void *addr) {
     }
 
     // nested branch
-    for (auto off : inputs) {
-      auto c = get_branch_dep(off);
-      if (c == nullptr) {
-        c = new branch_dep_t();
+    if (add_nested) {
+      for (auto off : inputs) {
+        auto c = get_branch_dep(off);
         if (c == nullptr) {
-          Report("WARNING: out of memory\n");
-        } else {
-          set_branch_dep(off, c);
-          c->input_deps.insert(inputs.begin(), inputs.end());
-          c->expr_deps.insert(cond == result);
+          c = new branch_dep_t();
+          if (c == nullptr) {
+            Report("WARNING: out of memory\n");
+          } else {
+            set_branch_dep(off, c);
+            c->input_deps.insert(inputs.begin(), inputs.end());
+            c->expr_deps.insert(cond == result);
+          }
         }
       }
     }
@@ -1020,7 +1022,9 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, u32 size, u32 predicate,
   z3::expr bv_c2 = __z3_context.bv_val((uint64_t)c2, size);
   z3::expr result = get_cmd(bv_c1, bv_c2, predicate).simplify();
 
-  __solve_cond(temp, result, addr);
+  // trace_cmp is only used in switch statement
+  // only add nested constraints for the case taken
+  __solve_cond(temp, result, c1 == c2, addr);
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
@@ -1041,7 +1045,7 @@ __taint_trace_cond(dfsan_label label, u8 r) {
   AOUT("solving cond: %u %u %u %p %u\n", label, r, __taint_trace_callstack, addr, itr->second);
 
   z3::expr result = __z3_context.bool_val(r);
-  __solve_cond(label, result, addr);
+  __solve_cond(label, result, true, addr);
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
