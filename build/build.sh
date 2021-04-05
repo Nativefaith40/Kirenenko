@@ -9,7 +9,8 @@ git submodule update
 
 sudo apt-get update
 sudo apt-get install -y libc6 libstdc++6 linux-libc-dev gcc-multilib \
-    cmake clang llvm-dev g++ g++-multilib python python-pip zlib1g-dev
+    cmake clang llvm-dev g++ g++-multilib python python-pip zlib1g-dev \
+    libc++-dev libc++abi-dev
 
 PREFIX=${PREFIX:-${ROOT_DIR}/bin/}
 
