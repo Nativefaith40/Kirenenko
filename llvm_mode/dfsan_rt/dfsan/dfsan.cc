@@ -884,13 +884,13 @@ add_constraints(dfsan_label label) {
       auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        if (c == nullptr) {
-          Report("WARNING: out of memory\n");
-        } else {
-          set_branch_dep(off, c);
-          c->input_deps.insert(inputs.begin(), inputs.end());
-          c->expr_deps.insert(cond);
-        }
+        set_branch_dep(off, c);
+      }
+      if (c == nullptr) {
+        Report("WARNING: out of memory\n");
+      } else {
+        c->input_deps.insert(inputs.begin(), inputs.end());
+        c->expr_deps.insert(cond);
       }
     }
   } catch (z3::exception e) {
@@ -979,13 +979,13 @@ static void __solve_cond(dfsan_label label, z3::expr &result, bool add_nested, v
         auto c = get_branch_dep(off);
         if (c == nullptr) {
           c = new branch_dep_t();
-          if (c == nullptr) {
-            Report("WARNING: out of memory\n");
-          } else {
-            set_branch_dep(off, c);
-            c->input_deps.insert(inputs.begin(), inputs.end());
-            c->expr_deps.insert(cond == result);
-          }
+          set_branch_dep(off, c);
+        }
+        if (c == nullptr) {
+          Report("WARNING: out of memory\n");
+        } else {
+          c->input_deps.insert(inputs.begin(), inputs.end());
+          c->expr_deps.insert(cond == result);
         }
       }
     }
@@ -1133,13 +1133,13 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
       auto c = get_branch_dep(off);
       if (c == nullptr) {
         c = new branch_dep_t();
-        if (c == nullptr) {
-          Report("WARNING: out of memory\n");
-        } else {
-          set_branch_dep(off, c);
-          c->input_deps.insert(inputs.begin(), inputs.end());
-          c->expr_deps.insert(index == result);
-        }
+        set_branch_dep(off, c);
+      }
+      if (c == nullptr) {
+        Report("WARNING: out of memory\n");
+      } else {
+        c->input_deps.insert(inputs.begin(), inputs.end());
+        c->expr_deps.insert(index == result);
       }
     }
 
