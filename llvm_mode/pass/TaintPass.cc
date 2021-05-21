@@ -28,7 +28,6 @@
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
-//#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -63,7 +62,6 @@
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
-//#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -78,10 +76,18 @@
 
 using namespace llvm;
 
+// This must be consistent with ShadowWidthBits.
+static const Align kShadowTLSAlignment = Align(4);
+
+// The size of TLS variables. These constants must be kept in sync with the ones
+// in dfsan.cpp.
+static const unsigned kArgTLSSize = 800;
+static const unsigned kRetvalTLSSize = 800;
+
 // External symbol to be used when generating the shadow address for
 // architectures with multiple VMAs. Instead of using a constant integer
 // the runtime will set the external mask based on the VMA range.
-static const char *const kTaintExternShadowPtrMask = "__dfsan_shadow_ptr_mask";
+const char kTaintExternShadowPtrMask[] = "__taint_shadow_ptr_mask";
 
 // The -taint-preserve-alignment flag controls whether this pass assumes that
 // alignment requirements provided by the input IR are correct.  For example,
@@ -153,7 +159,7 @@ static cl::opt<bool> ClTraceBound(
 static StringRef GetGlobalTypeString(const GlobalValue &G) {
   // Types of GlobalVariables are always pointer types.
   Type *GType = G.getValueType();
-  // For now we support blacklisting struct types only.
+  // For now we support excluding struct types only.
   if (StructType *SGType = dyn_cast<StructType>(GType)) {
     if (!SGType->isLiteral())
       return SGType->getName();
@@ -204,8 +210,8 @@ class TaintABIList {
 /// function type into another.  This struct is immutable.  It holds metadata
 /// useful for updating calls of the old function to the new type.
 struct TransformedFunction {
-  TransformedFunction(FunctionType *OriginalType,
-                      FunctionType *TransformedType,
+  TransformedFunction(FunctionType* OriginalType,
+                      FunctionType* TransformedType,
                       std::vector<unsigned> ArgumentIndexMapping)
       : OriginalType(OriginalType),
         TransformedType(TransformedType),
@@ -213,11 +219,11 @@ struct TransformedFunction {
 
   // Disallow copies.
   TransformedFunction(const TransformedFunction&) = delete;
-  TransformedFunction &operator=(const TransformedFunction&) = delete;
+  TransformedFunction& operator=(const TransformedFunction&) = delete;
 
   // Allow moves.
   TransformedFunction(TransformedFunction&&) = default;
-  TransformedFunction &operator=(TransformedFunction&&) = default;
+  TransformedFunction& operator=(TransformedFunction&&) = default;
 
   /// Type of the function before the transformation.
   FunctionType *OriginalType;
@@ -313,24 +319,19 @@ class Taint : public ModulePass {
 
   Module *Mod;
   LLVMContext *Ctx;
-  IntegerType *ShadowTy;
   IntegerType *Int8Ty;
   IntegerType *Int16Ty;
   IntegerType *Int32Ty;
   IntegerType *Int64Ty;
-  PointerType *ShadowPtrTy;
   IntegerType *IntptrTy;
+  /// The shadow type for all primitive types and vector types.
+  IntegerType *ShadowTy;
+  PointerType *ShadowPtrTy;
   ConstantInt *ZeroShadow;
   ConstantInt *ShadowPtrMask;
   ConstantInt *ShadowPtrMul;
   Constant *ArgTLS;
   Constant *RetvalTLS;
-  void *(*GetArgTLSPtr)();
-  void *(*GetRetvalTLSPtr)();
-  FunctionType *GetArgTLSTy;
-  FunctionType *GetRetvalTLSTy;
-  Constant *GetArgTLS;
-  Constant *GetRetvalTLS;
   Constant *ExternalShadowMask;
   FunctionType *TaintUnionFnTy;
   FunctionType *TaintUnionLoadFnTy;
@@ -392,12 +393,38 @@ class Taint : public ModulePass {
   void initializeRuntimeFunctions(Module &M);
   void initializeCallbackFunctions(Module &M);
 
+  /// Returns a zero constant with the shadow type of OrigTy.
+  ///
+  /// getZeroShadow({T1,T2,...}) = {getZeroShadow(T1),getZeroShadow(T2,...}
+  /// getZeroShadow([n x T]) = [n x getZeroShadow(T)]
+  /// getZeroShadow(other type) = i16(0)
+  ///
+  /// Note that a zero shadow is always i16(0) when shouldTrackFieldsAndIndices
+  /// returns false.
+  Constant *getZeroShadow(Type *OrigTy);
+  /// Returns a zero constant with the shadow type of V's type.
+  Constant *getZeroShadow(Value *V);
+
+  /// Checks if V is a zero shadow.
+  bool isZeroShadow(Value *V);
+
+  /// Returns the shadow type of OrigTy.
+  ///
+  /// getShadowTy({T1,T2,...}) = {getShadowTy(T1),getShadowTy(T2),...}
+  /// getShadowTy([n x T]) = [n x getShadowTy(T)]
+  /// getShadowTy(other type) = i16
+  ///
+  /// Note that a shadow type is always i16 when shouldTrackFieldsAndIndices
+  /// returns false.
+  Type *getShadowTy(Type *OrigTy);
+  /// Returns the shadow type of of V's type.
+  Type *getShadowTy(Value *V);
+
 public:
   static char ID;
 
   Taint(
-      const std::vector<std::string> &ABIListFiles = std::vector<std::string>(),
-      void *(*getArgTLS)() = nullptr, void *(*getRetValTLS)() = nullptr);
+      const std::vector<std::string> &ABIListFiles = std::vector<std::string>());
 
   bool doInitialization(Module &M) override;
   bool runOnModule(Module &M) override;
@@ -420,12 +447,17 @@ struct TaintFunction {
   bool AvoidNewBlocks;
   std::hash<std::string> HashFn;
 
-  struct CachedCombinedShadow {
-    BasicBlock *Block;
+  struct CachedShadow {
+    BasicBlock *Block; // The block where Shadow is defined.
     Value *Shadow;
   };
-  DenseMap<std::pair<Value *, Value *>, CachedCombinedShadow>
-      CachedCombinedShadows;
+  /// Maps a value to its latest shadow value in terms of domination tree.
+  DenseMap<std::pair<Value *, Value *>, CachedShadow> CachedShadows;
+  /// Maps a value to its latest collapsed shadow value it was converted to in
+  /// terms of domination tree. When ClDebugNonzeroLabels is on, this cache is
+  /// used at a post process where CFG blocks are split. So it does not cache
+  /// BasicBlock like CachedShadows, but uses domination between values.
+  DenseMap<Value *, Value *> CachedCollapsedShadows;
   DenseMap<Value *, std::set<Value *>> ShadowElements;
 
   TaintFunction(Taint &TT, Function *F, bool IsNativeABI)
@@ -437,9 +469,14 @@ struct TaintFunction {
     srandom(std::hash<std::string>{}(F->getName().str()));
   }
 
-  Value *getArgTLSPtr();
-  Value *getArgTLS(unsigned Index, Instruction *Pos);
-  Value *getRetvalTLS();
+  /// Computes the shadow address for a given function argument.
+  ///
+  /// Shadow = ArgTLS+ArgOffset.
+  Value *getArgTLS(Type *T, unsigned ArgOffset, IRBuilder<> &IRB);
+
+  /// Computes the shadow address for a retval.
+  Value *getRetvalTLS(Type *T, IRBuilder<> &IRB);
+
   Value *getShadow(Value *V);
   void setShadow(Instruction *I, Value *Shadow);
   // Op Shadow
@@ -458,6 +495,10 @@ struct TaintFunction {
   void visitGEPInst(GetElementPtrInst *I);
   Value *visitAllocaInst(AllocaInst *I);
   void checkBounds(Value *Ptr, Instruction *Pos);
+
+private:
+  /// Returns the shadow value of an argument A.
+  Value *getShadowForTLSArgument(Argument *A);
 };
 
 class TaintVisitor : public InstVisitor<TaintVisitor> {
@@ -515,12 +556,10 @@ llvm::createTaintPass(const std::vector<std::string> &ABIListFiles,
 #endif
 
 Taint::Taint(
-    const std::vector<std::string> &ABIListFiles, void *(*getArgTLS)(),
-    void *(*getRetValTLS)())
-    : ModulePass(ID), GetArgTLSPtr(getArgTLS), GetRetvalTLSPtr(getRetValTLS) {
+    const std::vector<std::string> &ABIListFiles)
+    : ModulePass(ID) {
   std::vector<std::string> AllABIListFiles(std::move(ABIListFiles));
-  AllABIListFiles.insert(AllABIListFiles.end(), ClABIListFiles.begin(),
-                         ClABIListFiles.end());
+  llvm::append_range(AllABIListFiles, ClABIListFiles);
   // FIXME: should we propagate vfs::FileSystem to this constructor?
   ABIList.set(
       SpecialCaseList::createOrDie(AllABIListFiles, *vfs::getRealFileSystem()));
@@ -581,6 +620,20 @@ TransformedFunction Taint::getCustomFunctionType(FunctionType *T) {
   return TransformedFunction(
       T, FunctionType::get(T->getReturnType(), ArgTypes, T->isVarArg()),
       ArgumentIndexMapping);
+}
+
+bool Taint::isZeroShadow(Value *V) {
+  return ZeroShadow == V;
+}
+
+Constant *Taint::getZeroShadow(Value *V) {
+  return ZeroShadow;
+}
+
+Type *Taint::getShadowTy(Type *OrigTy) { return ShadowTy; }
+
+Type *Taint::getShadowTy(Value *V) {
+  return getShadowTy(V->getType());
 }
 
 void Taint::addContextRecording(Function &F) {
@@ -703,24 +756,7 @@ bool Taint::doInitialization(Module &M) {
   TaintDebugFnTy = FunctionType::get(Type::getVoidTy(*Ctx),
       {ShadowTy, ShadowTy, ShadowTy, ShadowTy, ShadowTy}, false);
 
-  if (GetArgTLSPtr) {
-    Type *ArgTLSTy = ArrayType::get(ShadowTy, 64);
-    ArgTLS = nullptr;
-    GetArgTLSTy = FunctionType::get(PointerType::getUnqual(ArgTLSTy), false);
-    GetArgTLS = ConstantExpr::getIntToPtr(
-        ConstantInt::get(IntptrTy, uintptr_t(GetArgTLSPtr)),
-        PointerType::getUnqual(GetArgTLSTy));
-  }
-  if (GetRetvalTLSPtr) {
-    RetvalTLS = nullptr;
-    GetRetvalTLSTy = FunctionType::get(PointerType::getUnqual(ShadowTy), false);
-    GetRetvalTLS = ConstantExpr::getIntToPtr(
-        ConstantInt::get(IntptrTy, uintptr_t(GetRetvalTLSPtr)),
-        PointerType::getUnqual(GetRetvalTLSTy));
-  }
-
   ColdCallWeights = MDBuilder(*Ctx).createBranchWeights(1, 1000);
-
   return true;
 }
 
@@ -780,7 +816,7 @@ Taint::buildWrapperFunction(Function *F, StringRef NewFName,
       AttributeFuncs::typeIncompatible(NewFT->getReturnType()));
 
   BasicBlock *BB = BasicBlock::Create(*Ctx, "entry", NewF);
-  if (F->isVarArg() && getWrapperKind(F) != WK_Discard) {
+  if (F->isVarArg()) {
     NewF->removeAttributes(AttributeList::FunctionIndex,
                            AttrBuilder().addAttribute("split-stack"));
     CallInst::Create(TaintVarargWrapperFn,
@@ -989,25 +1025,23 @@ bool Taint::runOnModule(Module &M) {
   if (ABIList.isIn(M, "skip"))
     return false;
 
-  //const unsigned InitialGlobalSize = M.global_size();
+  const unsigned InitialGlobalSize = M.global_size();
   const unsigned InitialModuleSize = M.size();
 
   bool Changed = false;
 
-  if (!GetArgTLSPtr) {
-    Type *ArgTLSTy = ArrayType::get(ShadowTy, 64);
-    ArgTLS = Mod->getOrInsertGlobal("__dfsan_arg_tls", ArgTLSTy);
-    if (GlobalVariable *G = dyn_cast<GlobalVariable>(ArgTLS)) {
-      Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
-      G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
-    }
+  Type *ArgTLSTy = ArrayType::get(Int64Ty, kArgTLSSize / 8);
+  ArgTLS = Mod->getOrInsertGlobal("__dfsan_arg_tls", ArgTLSTy);
+  if (GlobalVariable *G = dyn_cast<GlobalVariable>(ArgTLS)) {
+    Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
+    G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
   }
-  if (!GetRetvalTLSPtr) {
-    RetvalTLS = Mod->getOrInsertGlobal("__dfsan_retval_tls", ShadowTy);
-    if (GlobalVariable *G = dyn_cast<GlobalVariable>(RetvalTLS)) {
-      Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
-      G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
-    }
+
+  Type *RetvalTLSTy = ArrayType::get(Int64Ty, kRetvalTLSSize / 8);
+  RetvalTLS = Mod->getOrInsertGlobal("__dfsan_retval_tls", RetvalTLSTy);
+  if (GlobalVariable *G = dyn_cast<GlobalVariable>(RetvalTLS)) {
+    Changed |= G->getThreadLocalMode() != GlobalVariable::InitialExecTLSModel;
+    G->setThreadLocalMode(GlobalVariable::InitialExecTLSModel);
   }
 
   ExternalShadowMask =
@@ -1088,6 +1122,7 @@ bool Taint::runOnModule(Module &M) {
 
     bool IsZeroArgsVoidRet = (FT->getNumParams() == 0 && !FT->isVarArg() &&
                               FT->getReturnType()->isVoidTy());
+
     if (isInstrumented(&F)) {
       // Instrumented functions get a 'dfs$' prefix.  This allows us to more
       // easily identify cases of mismatching ABIs.
@@ -1133,14 +1168,17 @@ bool Taint::runOnModule(Module &M) {
       FunctionType *NewFT = getInstrumentedABI() == IA_Args
                                 ? getArgsFunctionType(FT)
                                 : FT;
+
       // If the function being wrapped has local linkage, then preserve the
       // function's linkage in the wrapper function.
       GlobalValue::LinkageTypes wrapperLinkage =
-          F.hasLocalLinkage() ? F.getLinkage()
-                              : GlobalValue::LinkOnceODRLinkage;
+          F.hasLocalLinkage()
+              ? F.getLinkage()
+              : GlobalValue::LinkOnceODRLinkage;
+
       Function *NewF = buildWrapperFunction(
-          &F, std::string("dfsw$") + std::string(F.getName()), wrapperLinkage,
-          NewFT);
+          &F, std::string("dfsw$") + std::string(F.getName()),
+          wrapperLinkage, NewFT);
       if (getInstrumentedABI() == IA_TLS)
         NewF->removeAttributes(AttributeList::FunctionIndex, ReadOnlyNoneAttrs);
 
@@ -1246,52 +1284,64 @@ bool Taint::runOnModule(Module &M) {
   }
 
   return Changed || !FnsToInstrument.empty() ||
-         /*M.global_size() != InitialGlobalSize ||*/ M.size() != InitialModuleSize;
+         M.global_size() != InitialGlobalSize || M.size() != InitialModuleSize;
 }
 
-Value *TaintFunction::getArgTLSPtr() {
-  if (ArgTLSPtr)
-    return ArgTLSPtr;
-  if (TT.ArgTLS)
-    return ArgTLSPtr = TT.ArgTLS;
-
-  IRBuilder<> IRB(&F->getEntryBlock().front());
-  return ArgTLSPtr = IRB.CreateCall(TT.GetArgTLSTy, TT.GetArgTLS, {});
+Value *TaintFunction::getArgTLS(Type *T, unsigned ArgOffset, IRBuilder<> &IRB) {
+  Value *Base = IRB.CreatePointerCast(TT.ArgTLS, TT.IntptrTy);
+  if (ArgOffset)
+    Base = IRB.CreateAdd(Base, ConstantInt::get(TT.IntptrTy, ArgOffset));
+  return IRB.CreateIntToPtr(Base, PointerType::get(TT.getShadowTy(T), 0),
+                            "_dfsarg"); 
 }
 
-Value *TaintFunction::getRetvalTLS() {
-  if (RetvalTLSPtr)
-    return RetvalTLSPtr;
-  if (TT.RetvalTLS)
-    return RetvalTLSPtr = TT.RetvalTLS;
-
-  IRBuilder<> IRB(&F->getEntryBlock().front());
-  return RetvalTLSPtr = IRB.CreateCall(TT.GetRetvalTLSTy, TT.GetRetvalTLS, {});
+Value *TaintFunction::getRetvalTLS(Type *T, IRBuilder<> &IRB) {
+  return IRB.CreatePointerCast(
+      TT.RetvalTLS, PointerType::get(TT.getShadowTy(T), 0), "_dfsret");
 }
 
-Value *TaintFunction::getArgTLS(unsigned Idx, Instruction *Pos) {
-  IRBuilder<> IRB(Pos);
-  return IRB.CreateConstGEP2_64(ArrayType::get(TT.ShadowTy, 64),
-                                getArgTLSPtr(), 0, Idx);
+Value *TaintFunction::getShadowForTLSArgument(Argument *A) {
+  unsigned ArgOffset = 0;
+  const DataLayout &DL = F->getParent()->getDataLayout();
+  for (auto &FArg : F->args()) {
+    if (!FArg.getType()->isSized()) {
+      if (A == &FArg)
+        break;
+      continue;
+    }
+
+    unsigned Size = DL.getTypeAllocSize(TT.getShadowTy(&FArg));
+    if (A != &FArg) {
+      ArgOffset += alignTo(Size, kShadowTLSAlignment);
+      if (ArgOffset > kArgTLSSize)
+        break; // ArgTLS overflows, uses a zero shadow.
+      continue;
+    }
+
+    if (ArgOffset + Size > kArgTLSSize)
+      break; // ArgTLS overflows, uses a zero shadow.
+
+    Instruction *ArgTLSPos = &*F->getEntryBlock().begin();
+    IRBuilder<> IRB(ArgTLSPos);
+    Value *ArgShadowPtr = getArgTLS(FArg.getType(), ArgOffset, IRB);
+    return IRB.CreateAlignedLoad(TT.getShadowTy(&FArg), ArgShadowPtr,
+                                 kShadowTLSAlignment);
+  }
+
+  return TT.getZeroShadow(A);
 }
 
 Value *TaintFunction::getShadow(Value *V) {
   if (!isa<Argument>(V) && !isa<Instruction>(V))
-    return TT.ZeroShadow;
+    return TT.getZeroShadow(V);
   Value *&Shadow = ValShadowMap[V];
   if (!Shadow) {
     if (Argument *A = dyn_cast<Argument>(V)) {
       if (IsNativeABI)
-        return TT.ZeroShadow;
+        return TT.getZeroShadow(V);
       switch (IA) {
       case Taint::IA_TLS: {
-        Value *ArgTLSPtr = getArgTLSPtr();
-        Instruction *ArgTLSPos =
-            TT.ArgTLS ? &*F->getEntryBlock().begin()
-                       : cast<Instruction>(ArgTLSPtr)->getNextNode();
-        IRBuilder<> IRB(ArgTLSPos);
-        Shadow =
-            IRB.CreateLoad(TT.ShadowTy, getArgTLS(A->getArgNo(), ArgTLSPos));
+        Shadow = getShadowForTLSArgument(A);
         break;
       }
       case Taint::IA_Args: {
@@ -1306,7 +1356,7 @@ Value *TaintFunction::getShadow(Value *V) {
       }
       NonZeroChecks.push_back(Shadow);
     } else {
-      Shadow = TT.ZeroShadow;
+      Shadow = TT.getZeroShadow(V);
     }
   }
   return Shadow;
@@ -1359,28 +1409,28 @@ Value *TaintFunction::combineBinaryOperatorShadows(BinaryOperator *BO,
 Value *TaintFunction::combineShadows(Value *V1, Value *V2,
                                      uint16_t op,
                                      Instruction *Pos) {
-  if (V1 == TT.ZeroShadow && V2 == TT.ZeroShadow) return V1;
+  if (TT.isZeroShadow(V1) && TT.isZeroShadow(V2)) return V1;
 
   // filter types
   Type *Ty = Pos->getOperand(0)->getType();
   if (Ty->isFloatingPointTy()) {
     // check for FP
     if (!ClTraceFP)
-      return TT.ZeroShadow;
+      return TT.getZeroShadow(Pos);
   } else if (Ty->isVectorTy()) {
     // FIXME: vector type
-    return TT.ZeroShadow;
+    return TT.getZeroShadow(Pos);
   } else if (!Ty->isIntegerTy() && !Ty->isPointerTy()) {
     // not FP and not vector and not int and not ptr?
     errs() << "Unknown type: " << *Pos << "\n";
-    return TT.ZeroShadow;
+    return TT.getZeroShadow(Pos);
   }
 
   // filter size
   auto &DL = Pos->getModule()->getDataLayout();
   uint64_t size = DL.getTypeSizeInBits(Pos->getType());
   // FIXME: do not handle type larger than 64-bit
-  if (size > 64) return TT.ZeroShadow;
+  if (size > 64) return TT.getZeroShadow(Pos);
 
   IRBuilder<> IRB(Pos);
   if (CmpInst *CI = dyn_cast<CmpInst>(Pos)) { // for both icmp and fcmp
@@ -1460,7 +1510,7 @@ Value *TaintFunction::loadShadow(Value *Addr, uint64_t Size, uint64_t Align,
   }
 
   SmallVector<const Value *, 2> Objs;
-  GetUnderlyingObjects(Addr, Objs, Pos->getModule()->getDataLayout());
+  getUnderlyingObjects(Addr, Objs);
   bool AllConstants = true;
   for (const Value *Obj : Objs) {
     if (isa<Function>(Obj) || isa<BlockAddress>(Obj))
@@ -1490,7 +1540,7 @@ void TaintVisitor::visitLoadInst(LoadInst &LI) {
   auto &DL = LI.getModule()->getDataLayout();
   uint64_t Size = DL.getTypeStoreSize(LI.getType());
   if (Size == 0) {
-    TF.setShadow(&LI, TF.TT.ZeroShadow);
+    TF.setShadow(&LI, TF.TT.getZeroShadow(&LI));
     return;
   }
 
@@ -1504,7 +1554,7 @@ void TaintVisitor::visitLoadInst(LoadInst &LI) {
     Shadow = TF.combineShadows(Shadow, PtrShadow, &LI);
   }
 #endif
-  if (Shadow != TF.TT.ZeroShadow)
+  if (!TF.TT.isZeroShadow(Shadow))
     TF.NonZeroChecks.push_back(Shadow);
   if (ClTraceBound)
     TF.checkBounds(LI.getPointerOperand(), &LI);
@@ -1526,7 +1576,7 @@ void TaintFunction::storeShadow(Value *Addr, uint64_t Size, Align Alignment,
   const Align ShadowAlign(Alignment.value() * TT.ShadowWidthBytes);
   IRBuilder<> IRB(Pos);
   Value *ShadowAddr = TT.getShadowAddress(Addr, Pos);
-  if (Shadow == TT.ZeroShadow) {
+  if (TT.isZeroShadow(Shadow)) {
     IntegerType *ShadowTy = IntegerType::get(*TT.Ctx, Size * TT.ShadowWidthBits);
     Value *ExtZeroShadow = ConstantInt::get(ShadowTy, 0);
     Value *ExtShadowAddr =
@@ -1848,7 +1898,15 @@ void TaintVisitor::visitReturnInst(ReturnInst &RI) {
     case Taint::IA_TLS: {
       Value *S = TF.getShadow(RI.getReturnValue());
       IRBuilder<> IRB(&RI);
-      IRB.CreateStore(S, TF.getRetvalTLS());
+      Type *RT = TF.F->getFunctionType()->getReturnType();
+      unsigned Size =
+          getDataLayout().getTypeAllocSize(TF.TT.ShadowTy);
+      if (Size <= kRetvalTLSSize) {
+        // If the size overflows, stores nothing. At callsite, oversized return
+        // shadows are set to zero.
+        IRB.CreateAlignedStore(S, TF.getRetvalTLS(RT, IRB),
+                               kShadowTLSAlignment);
+      }
       break;
     }
     case Taint::IA_Args: {
@@ -2019,9 +2077,20 @@ void TaintVisitor::visitCallBase(CallBase &CB) {
 
   FunctionType *FT = CB.getFunctionType();
   if (TF.TT.getInstrumentedABI() == Taint::IA_TLS) {
-    for (unsigned i = 0, n = FT->getNumParams(); i != n; ++i) {
-      IRB.CreateStore(TF.getShadow(CB.getArgOperand(i)),
-                      TF.getArgTLS(i, &CB));
+    unsigned ArgOffset = 0;
+    const DataLayout &DL = getDataLayout();
+    for (unsigned I = 0, N = FT->getNumParams(); I != N; ++I) {
+      unsigned Size =
+          DL.getTypeAllocSize(TF.TT.getShadowTy(FT->getParamType(I)));
+      // Stop storing if arguments' size overflows. Inside a function, arguments
+      // after overflow have zero shadow values.
+      if (ArgOffset + Size > kArgTLSSize)
+        break;
+      IRB.CreateAlignedStore(
+          TF.getShadow(CB.getArgOperand(I)),
+          TF.getArgTLS(FT->getParamType(I), ArgOffset, IRB),
+          kShadowTLSAlignment);
+      ArgOffset += alignTo(Size, kShadowTLSAlignment);
     }
   }
 
@@ -2042,10 +2111,19 @@ void TaintVisitor::visitCallBase(CallBase &CB) {
 
     if (TF.TT.getInstrumentedABI() == Taint::IA_TLS) {
       IRBuilder<> NextIRB(Next);
-      LoadInst *LI = NextIRB.CreateLoad(TF.TT.ShadowTy, TF.getRetvalTLS());
-      TF.SkipInsts.insert(LI);
-      TF.setShadow(&CB, LI);
-      TF.NonZeroChecks.push_back(LI);
+      const DataLayout &DL = getDataLayout();
+      unsigned Size = DL.getTypeAllocSize(TF.TT.getShadowTy(&CB));
+      if (Size > kRetvalTLSSize) {
+        // Set overflowed return shadow to be zero.
+        TF.setShadow(&CB, TF.TT.getZeroShadow(&CB));
+      } else {
+        LoadInst *LI = NextIRB.CreateAlignedLoad(
+            TF.TT.getShadowTy(&CB), TF.getRetvalTLS(CB.getType(), NextIRB),
+            kShadowTLSAlignment, "_dfsret");
+        TF.SkipInsts.insert(LI);
+        TF.setShadow(&CB, LI);
+        TF.NonZeroChecks.push_back(LI);
+      }
     }
   }
 

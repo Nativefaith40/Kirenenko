@@ -109,8 +109,15 @@ static std::vector<branch_dep_t*> *__branch_deps;
 
 Flags __dfsan::flags_data;
 
-SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL dfsan_label __dfsan_retval_tls;
-SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL dfsan_label __dfsan_arg_tls[64];
+// The size of TLS variables. These constants must be kept in sync with the ones
+// in Taint.cc
+static const int kArgTlsSize = 800;
+static const int kRetvalTlsSize = 800;
+
+SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL u64
+    __dfsan_retval_tls[kRetvalTlsSize / sizeof(u64)];
+SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL u64
+    __dfsan_arg_tls[kArgTlsSize / sizeof(u64)];
 
 SANITIZER_INTERFACE_ATTRIBUTE uptr __dfsan_shadow_ptr_mask;
 
@@ -1406,7 +1413,7 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   InitializeFlags();
 
   ::InitializePlatformEarly();
-  MmapFixedNoReserve(ShadowAddr(), UnusedAddr() - ShadowAddr());
+  MmapFixedSuperNoReserve(ShadowAddr(), UnusedAddr() - ShadowAddr());
   __dfsan_label_info = (dfsan_label_info *)UnionTableAddr();
   // init const size
   __dfsan_label_info[CONST_LABEL].size = 8;
@@ -1414,13 +1421,18 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   auto num_of_labels = (HashTableAddr() - UnionTableAddr()) / sizeof(dfsan_label_info);
   __alloca_stack_top = __alloca_stack_bottom = (dfsan_label)(num_of_labels - 2);
 
-  InitializeInterceptors();
-
   // Protect the region of memory we don't use, to preserve the one-to-one
-  // mapping from application to shadow memory.
-  MmapFixedNoAccess(UnusedAddr(), AppAddr() - UnusedAddr());
-  MmapFixedNoReserve(HashTableAddr(), hashtable_size);
+  // mapping from application to shadow memory. But if ASLR is disabled, Linux
+  // will load our executable in the middle of our unused region. This mostly
+  // works so long as the program doesn't use too much memory. We support this
+  // case by disabling memory protection when ASLR is disabled.
+  uptr init_addr = (uptr)&dfsan_init;
+  if (!(init_addr >= UnusedAddr() && init_addr < AppAddr()))
+    MmapFixedNoAccess(UnusedAddr(), AppAddr() - UnusedAddr());
+  MmapFixedSuperNoReserve(HashTableAddr(), hashtable_size);
   __taint::allocator_init(HashTableAddr(), HashTableAddr() + hashtable_size);
+
+  InitializeInterceptors();
 
   InitializeTaintFile();
 
