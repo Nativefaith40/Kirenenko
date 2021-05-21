@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.4)
 
 project(kirenenko_llvm_mode VERSION 1.2.2 LANGUAGES C CXX ASM)
 
-find_package(LLVM 11.1 REQUIRED CONFIG)
+find_package(LLVM 12 REQUIRED CONFIG)
 
 if (LLVM_FOUND)
     message(STATUS "LLVM_VERSION_MAJOR: ${LLVM_VERSION_MAJOR}")
