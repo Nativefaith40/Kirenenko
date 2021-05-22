@@ -900,6 +900,35 @@ add_constraints(dfsan_label label) {
   get_label_info(label)->flags |= B_FLIPPED;
 }
 
+// assumes under try-catch and the global solver __z3_solver already has nested context
+static bool __solve_expr(z3::expr &e) {
+  bool ret = false;
+  // set up local optmistic solver
+  z3::solver opt_solver = z3::solver(__z3_context, "QF_BV");
+  opt_solver.set("timeout", 1000U);
+  opt_solver.add(e);
+  z3::check_result res = opt_solver.check();
+  if (res == z3::sat) {
+    // optimistic sat, check nested
+    __z3_solver.push();
+    __z3_solver.add(e);
+    res = __z3_solver.check();
+    if (res == z3::sat) {
+      z3::model m = __z3_solver.get_model();
+      generate_input(m);
+      ret = true;
+    } else {
+    #if OPTIMISTIC
+      z3::model m = opt_solver.get_model();
+      generate_input(m);
+    #endif
+    }
+    // reset
+    __z3_solver.pop();
+  }
+  return ret;
+}
+
 static void __solve_cond(dfsan_label label, z3::expr &result, bool add_nested, void *addr) {
   if ((get_label_info(label)->flags & B_FLIPPED))
     return;
@@ -933,41 +962,26 @@ static void __solve_cond(dfsan_label label, z3::expr &result, bool add_nested, v
     }
 
     __z3_solver.reset();
-        //AOUT("%s\n", cond.to_string().c_str());
-    __z3_solver.add(cond != result);
-    z3::check_result res = __z3_solver.check();
-    if (res == z3::sat) {
-#if OPTIMISTIC
-      z3::model m_opt = __z3_solver.get_model();
-#endif
-      __z3_solver.push();
-
-      // 2. add constraints
-      expr_set_t added;
-      for (auto off : inputs) {
-        //AOUT("adding offset %d\n", off);
-        auto deps = get_branch_dep(off);
-        if (deps != nullptr) {
-          for (auto &expr : deps->expr_deps) {
-            if (added.insert(expr).second) {
-              //AOUT("adding expr: %s\n", expr.to_string().c_str());
-              __z3_solver.add(expr);
-            }
+    // 2. add constraints
+    expr_set_t added;
+    for (auto off : inputs) {
+      //AOUT("adding offset %d\n", off);
+      auto deps = get_branch_dep(off);
+      if (deps != nullptr) {
+        for (auto &expr : deps->expr_deps) {
+          if (added.insert(expr).second) {
+            //AOUT("adding expr: %s\n", expr.to_string().c_str());
+            __z3_solver.add(expr);
           }
         }
       }
-
-      res = __z3_solver.check();
-      if (res == z3::sat) {
-        AOUT("branch solved\n");
-        z3::model m = __z3_solver.get_model();
-        generate_input(m);
-      } else {
-#if OPTIMISTIC
-        generate_input(m_opt);
-#endif
-      }
-    } else if (res == z3::unsat) {
+    }
+    assert(__z3_solver.check() == z3::sat);
+    
+    z3::expr e = (cond != result);
+    if (__solve_expr(e)) {
+      AOUT("branch solved\n");
+    } else {
       AOUT("branch not solvable @%p\n", addr);
       //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
       //AOUT("  tree_size = %d", __dfsan_label_info[label].tree_size);
@@ -1056,9 +1070,44 @@ __taint_trace_indcall(dfsan_label label) {
   AOUT("tainted indirect call target: %d\n", label);
 }
 
+// assumes under try-catch and the global solver already has context
+static void __solve_gep(z3::expr &index, uint64_t lb, uint64_t ub, uint64_t step, void *addr) {
+
+  // enumerate indices
+  for (uint64_t i = lb; i < ub; i += step) {
+    z3::expr idx = __z3_context.bv_val(i, 64);
+    z3::expr e = (index == idx);
+    if (__solve_expr(e))
+      AOUT("\tindex == %lld feasible\n", i);
+  }
+
+  // check feasibility for OOB
+  if (flags().trace_bounds) {
+    // upper bound
+    z3::expr u = __z3_context.bv_val(ub, 64);
+    z3::expr e = z3::uge(index, u);
+    if (__solve_expr(e))
+      AOUT("\tindex >= %lld solved @%p\n", ub, addr);
+    else
+      AOUT("\tindex >= %lld not possible\n", ub);
+
+    // lower bound
+    if (lb == 0) {
+      e = (index < 0);
+    } else {
+      z3::expr l = __z3_context.bv_val(lb, 64);
+      e = z3::ult(index, l);
+    }
+    if (__solve_expr(e))
+      AOUT("\tindex < %lld solved @%p\n", lb, addr);
+    else
+      AOUT("\tindex < %lld not possible\n", lb);
+  }
+}
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, int64_t index,
-                  uint64_t num_elems, int64_t elem_size, int64_t current_offset) {
+                  uint64_t num_elems, uint64_t elem_size, int64_t current_offset) {
   if (index_label == 0)
     return;
 
@@ -1075,182 +1124,51 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
     z3::expr i = serialize(index_label, inputs);
     z3::expr r = __z3_context.bv_val(index, size);
 
-    // solve bound constraints
-    dfsan_label_info *bounds = get_label_info(ptr_label);
-    if (flags().trace_bounds) {
-      // collect additional input deps
-      std::vector<dfsan_label> worklist;
-      worklist.insert(worklist.begin(), inputs.begin(), inputs.end());
-      while (!worklist.empty()) {
-        auto off = worklist.back();
-        worklist.pop_back();
+    // collect additional input deps
+    std::vector<dfsan_label> worklist;
+    worklist.insert(worklist.begin(), inputs.begin(), inputs.end());
+    while (!worklist.empty()) {
+      auto off = worklist.back();
+      worklist.pop_back();
 
-        auto deps = get_branch_dep(off);
-        if (deps != nullptr) {
-          for (auto i : deps->input_deps) {
-            if (inputs.insert(i).second)
-              worklist.push_back(i);
+      auto deps = get_branch_dep(off);
+      if (deps != nullptr) {
+        for (auto i : deps->input_deps) {
+          if (inputs.insert(i).second)
+            worklist.push_back(i);
+        }
+      }
+    }
+
+    // set up the global solver with nested constraints
+    __z3_solver.reset();
+    expr_set_t added;
+    for (auto off : inputs) {
+      auto deps = get_branch_dep(off);
+      if (deps != nullptr) {
+        for (auto &expr : deps->expr_deps) {
+          if (added.insert(expr).second) {
+            __z3_solver.add(expr);
           }
         }
       }
+    }
+    assert(__z3_solver.check() == z3::sat);
 
-      // first, check against fixed array bounds if available
-      if (num_elems > 0) {
-
-        // upper bound
-        __z3_solver.reset();
-        z3::expr ne = __z3_context.bv_val(num_elems, 64);
-        __z3_solver.add(z3::uge(z3::zext(i, 64 - size), ne));
-        z3::check_result res = __z3_solver.check();
-        //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-        if (res == z3::sat) {
-        #if OPTIMISTIC
-          z3::model m_opt = __z3_solver.get_model();
-        #endif
-          __z3_solver.push();
-
-          // add constraints
-          expr_set_t added;
-          for (auto off : inputs) {
-            auto deps = get_branch_dep(off);
-            if (deps != nullptr) {
-              for (auto &expr : deps->expr_deps) {
-                if (added.insert(expr).second) {
-                  __z3_solver.add(expr);
-                }
-              }
-            }
-          }
-
-          res = __z3_solver.check();
-          if (res == z3::sat) {
-            AOUT("\tindex >= %lld solved @%p\n", num_elems, addr);
-            z3::model m = __z3_solver.get_model();
-            generate_input(m);
-          } else {
-          #if OPTIMISTIC
-            generate_input(m_opt);
-          #endif
-          }
-        }
-
-        // lower bound
-        __z3_solver.reset();
-        __z3_solver.add(i < 0);
-        res = __z3_solver.check();
-        //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-        if (res == z3::sat) {
-          #if OPTIMISTIC
-          z3::model m_opt = __z3_solver.get_model();
-          #endif
-          __z3_solver.push();
-
-          // add constraints
-          expr_set_t added;
-          for (auto off : inputs) {
-            auto deps = get_branch_dep(off);
-            if (deps != nullptr) {
-              for (auto &expr : deps->expr_deps) {
-                if (added.insert(expr).second) {
-                  __z3_solver.add(expr);
-                }
-              }
-            }
-          }
-
-          res = __z3_solver.check();
-          if (res == z3::sat) {
-            AOUT("\tindex < 0 solved @%p\n", addr);
-            z3::model m = __z3_solver.get_model();
-            generate_input(m);
-          } else {
-          #if OPTIMISTIC
-            generate_input(m_opt);
-          #endif
-          }
-        }
-      } 
+    // first, check against fixed array bounds if available
+    if (num_elems > 0) {
+      z3::expr idx = z3::zext(i, 64 - size);
+      __solve_gep(idx, 0, num_elems, 1, addr);
+    } else {
+      dfsan_label_info *bounds = get_label_info(ptr_label);
       // if the array is not with fixed size, check bound info
-      else if (bounds->op == Alloca) {
+      if (bounds->op == Alloca) {
         z3::expr es = __z3_context.bv_val(elem_size, 64);
         z3::expr co = __z3_context.bv_val(current_offset, 64);
         z3::expr p = __z3_context.bv_val(ptr, 64);
         z3::expr np = z3::sext(i, 64 - size) * es + co + p;
-        z3::expr lb = __z3_context.bv_val((uint64_t)bounds->op1, 64);
-        z3::expr ub = __z3_context.bv_val((uint64_t)bounds->op2, 64);
-
-        // upper bound
-        __z3_solver.reset();
-        __z3_solver.add(uge(np, ub));
-        z3::check_result res = __z3_solver.check();
-        //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-        if (res == z3::sat) {
-          #if OPTIMISTIC
-          z3::model m_opt = __z3_solver.get_model();
-          #endif
-          __z3_solver.push();
-
-          // add constraints
-          expr_set_t added;
-          for (auto off : inputs) {
-            auto deps = get_branch_dep(off);
-            if (deps != nullptr) {
-              for (auto &expr : deps->expr_deps) {
-                if (added.insert(expr).second) {
-                  __z3_solver.add(expr);
-                }
-              }
-            }
-          }
-
-          res = __z3_solver.check();
-          if (res == z3::sat) {
-            AOUT("\tptr >= %p solved @%p\n", bounds->op2, addr);
-            z3::model m = __z3_solver.get_model();
-            generate_input(m);
-          } else {
-          #if OPTIMISTIC
-            generate_input(m_opt);
-          #endif
-          }
-        }
-
-        // lower bound
-        __z3_solver.reset();
-        __z3_solver.add(ult(np, lb));
-        res = __z3_solver.check();
-        //AOUT("\n%s\n", __z3_solver.to_smt2().c_str());
-        if (res == z3::sat) {
-        #if OPTIMISTIC
-          z3::model m_opt = __z3_solver.get_model();
-        #endif
-          __z3_solver.push();
-
-          // add constraints
-          expr_set_t added;
-          for (auto off : inputs) {
-            auto deps = get_branch_dep(off);
-            if (deps != nullptr) {
-              for (auto &expr : deps->expr_deps) {
-                if (added.insert(expr).second) {
-                  __z3_solver.add(expr);
-                }
-              }
-            }
-          }
-
-          res = __z3_solver.check();
-          if (res == z3::sat) {
-            AOUT("\tptr < %p solved @%p\n", bounds->op1, addr);
-            z3::model m = __z3_solver.get_model();
-            generate_input(m);
-          } else {
-          #if OPTIMISTIC
-            generate_input(m_opt);
-          #endif
-          }
-        }
-      } 
+        __solve_gep(np, (uint64_t)bounds->op1, (uint64_t)bounds->op2, elem_size, addr);
+      }
     }
 
     // always preserve
