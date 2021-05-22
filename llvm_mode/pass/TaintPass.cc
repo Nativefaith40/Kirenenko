@@ -876,8 +876,6 @@ void Taint::initializeRuntimeFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
                          Attribute::ZExt);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
@@ -889,8 +887,6 @@ void Taint::initializeRuntimeFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
                          Attribute::ZExt);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
@@ -902,8 +898,6 @@ void Taint::initializeRuntimeFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadOnly);
     AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
                          Attribute::ZExt);
     TaintUnionLoadFn =
@@ -943,8 +937,6 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
     AL = AL.addParamAttribute(M.getContext(), 1, Attribute::ZExt);
     TaintTraceCmpFn =
@@ -954,8 +946,6 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
     TaintTraceCondFn =
         Mod->getOrInsertFunction("__taint_trace_cond", TaintTraceCondFnTy, AL);
@@ -964,8 +954,6 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
     TaintTraceIndirectCallFn =
         Mod->getOrInsertFunction("__taint_trace_indcall", TaintTraceIndirectCallFnTy, AL);
@@ -974,8 +962,6 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
     AL = AL.addParamAttribute(M.getContext(), 2, Attribute::ZExt);
     TaintTraceGEPFn =
@@ -1000,8 +986,6 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addAttribute(M.getContext(), AttributeList::ReturnIndex,
                          Attribute::ZExt);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
@@ -1012,8 +996,6 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AttributeList AL;
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
-    AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
-                         Attribute::ReadNone);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
     TaintCheckBoundsFn =
         Mod->getOrInsertFunction("__taint_check_bounds", TaintCheckBoundsFnTy, AL);
