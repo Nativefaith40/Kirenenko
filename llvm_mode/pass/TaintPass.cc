@@ -1493,8 +1493,10 @@ Value *TaintFunction::combineCmpInstShadows(CmpInst *CI,
 void TaintFunction::checkBounds(Value *Ptr, Instruction *Pos) {
   IRBuilder<> IRB(Pos);
   Value *PtrShadow = getShadow(Ptr);
-  Value *Addr = IRB.CreatePtrToInt(Ptr, TT.Int64Ty);
-  IRB.CreateCall(TT.TaintCheckBoundsFn, {PtrShadow, Addr});
+  // ptr shadow only exists for array and heap object
+  if (!TT.isZeroShadow(PtrShadow)) {
+    Value *Addr = IRB.CreatePtrToInt(Ptr, TT.Int64Ty);
+    IRB.CreateCall(TT.TaintCheckBoundsFn, {PtrShadow, Addr});
 }
 
 // Generates IR to load shadow corresponding to bytes [Addr, Addr+Size), where
@@ -1568,7 +1570,8 @@ void TaintFunction::storeShadow(Value *Addr, uint64_t Size, Align Alignment,
     const auto i = AllocaShadowMap.find(AI);
     if (i != AllocaShadowMap.end()) {
       IRBuilder<> IRB(Pos);
-      IRB.CreateStore(Shadow, i->second);
+      auto *SI = IRB.CreateStore(Shadow, i->second);
+      SkipInsts.insert(SI);
       return;
     }
   }
