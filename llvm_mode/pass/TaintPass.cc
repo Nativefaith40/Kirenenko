@@ -734,7 +734,7 @@ bool Taint::doInitialization(Module &M) {
       Int64Ty, Int64Ty };
   TaintTraceCmpFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCmpArgs, false);
-  Type *TaintTraceCondArgs[2] = { ShadowTy, Int8Ty };
+  Type *TaintTraceCondArgs[2] = { ShadowTy, IntegerType::get(*Ctx, 1) };
   TaintTraceCondFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCondArgs, false);
   TaintTraceIndirectCallFnTy = FunctionType::get(
@@ -1439,7 +1439,7 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
     op |= (CI->getPredicate() << 8);
   }
   Value *Op = ConstantInt::get(TT.Int16Ty, op);
-  Value *Size = ConstantInt::get(TT.Int8Ty, size);
+  Value *Size = ConstantInt::get(TT.Int16Ty, size);
   Value *Op1 = Pos->getOperand(0);
   Ty = Op1->getType();
   // bitcast to integer before extending
@@ -1497,6 +1497,7 @@ void TaintFunction::checkBounds(Value *Ptr, Instruction *Pos) {
   if (!TT.isZeroShadow(PtrShadow)) {
     Value *Addr = IRB.CreatePtrToInt(Ptr, TT.Int64Ty);
     IRB.CreateCall(TT.TaintCheckBoundsFn, {PtrShadow, Addr});
+  }
 }
 
 // Generates IR to load shadow corresponding to bytes [Addr, Addr+Size), where
