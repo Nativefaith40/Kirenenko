@@ -92,6 +92,7 @@ struct context_hash {
 static std::unordered_map<trace_context, u16, context_hash> __branches;
 static const u16 MAX_BRANCH_COUNT = 16;
 static const u64 MAX_GEP_INDEX = 0x10000;
+static std::unordered_set<uptr> __buffers;
 
 // dependencies
 struct expr_hash {
@@ -246,8 +247,11 @@ dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, u16 op, u16 size,
     if (op != Extract) return 0;
   }
 
-  if (l1 >= CONST_OFFSET) op1 = 0;
-  if (l2 >= CONST_OFFSET) op2 = 0;
+  // special handling for bounds, which may use all four fields
+  if (op != Alloca) {
+    if (l1 >= CONST_OFFSET) op1 = 0;
+    if (l2 >= CONST_OFFSET) op2 = 0;
+  }
 
   struct dfsan_label_info label_info = {
     .l1 = l1, .l2 = l2, .op1 = op1, .op2 = op2, .op = op, .size = size,
@@ -455,6 +459,11 @@ dfsan_label __taint_trace_alloca(dfsan_label l, u64 size, u64 elem_size, u64 bas
   }
 }
 
+// NOTES: for Alloca, or buffer buounds info
+// .l1 = num of elements label, for calloc style allocators
+// .l2 = (element) size label
+// .op1 = lower bounds
+// .op2 = upper bounds
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 void __taint_check_bounds(dfsan_label l, uptr addr) {
   if (flags().trace_bounds) {
@@ -1114,6 +1123,9 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
   if ((get_label_info(index_label)->flags & B_FLIPPED))
     return;
 
+  if (__buffers.count(ptr) != 0)
+    return;
+
   AOUT("tainted GEP index: %lld = %d, ne: %lld, es: %lld, offset: %lld\n",
       index, index_label, num_elems, elem_size, current_offset);
 
@@ -1156,8 +1168,8 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
     assert(__z3_solver.check() == z3::sat);
 
     // first, check against fixed array bounds if available
+    z3::expr idx = z3::zext(i, 64 - size);
     if (num_elems > 0) {
-      z3::expr idx = z3::zext(i, 64 - size);
       __solve_gep(idx, 0, num_elems, 1, addr);
     } else {
       dfsan_label_info *bounds = get_label_info(ptr_label);
@@ -1165,9 +1177,26 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
       if (bounds->op == Alloca) {
         z3::expr es = __z3_context.bv_val(elem_size, 64);
         z3::expr co = __z3_context.bv_val(current_offset, 64);
-        z3::expr p = __z3_context.bv_val(ptr, 64);
-        z3::expr np = z3::sext(i, 64 - size) * es + co + p;
-        __solve_gep(np, (uint64_t)bounds->op1, (uint64_t)bounds->op2, elem_size, addr);
+        if (bounds->l2 == 0) {
+          // only perform index enumeration and bound check
+          // when the size of the buffer is fixed
+          z3::expr p = __z3_context.bv_val(ptr, 64);
+          z3::expr np = idx * es + co + p;
+          __solve_gep(np, (uint64_t)bounds->op1, (uint64_t)bounds->op2, elem_size, addr);
+        } else {
+          // if the buffer size is input-dependent (not fixed)
+          // check if over flow is possible
+          std::unordered_set<dfsan_label> dummy;
+          z3::expr bs = serialize(bounds->l2, dummy); // size label
+          if (bounds->l1) {
+            dummy.clear();
+            z3::expr be = serialize(bounds->l1, dummy); // elements label
+            bs = bs * be;
+          }
+          z3::expr e = z3::ugt(idx * es * co, bs);
+          if (__solve_expr(e))
+            AOUT("index >= buffer size feasible @%p\n", addr);
+        }
       }
     }
 
@@ -1191,6 +1220,8 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label, 
   } catch (z3::exception e) {
     Report("WARNING: index solving error: %s @%p\n", e.msg(), __builtin_return_address(0));
   }
+
+  __buffers.insert(ptr);
 
 }
 
