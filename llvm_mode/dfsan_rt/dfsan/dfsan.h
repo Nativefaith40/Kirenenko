@@ -38,16 +38,22 @@ extern bool print_debug;
 // Copy declarations from public sanitizer/dfsan_interface.h header here.
 typedef u32 dfsan_label;
 
+typedef union {
+  u64 i;
+  float f;
+  double d;
+} data;
+
 struct dfsan_label_info {
   dfsan_label l1;
   dfsan_label l2;
-  u64 op1;
-  u64 op2;
+  data op1;
+  data op2;
   u16 op;
   u16 size;
+  u32 hash;
   u8 flags;
   u32 tree_size;
-  u32 hash;
   void* expr;
   void* deps;
 } __attribute__((aligned (8)));
