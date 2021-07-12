@@ -495,10 +495,13 @@ struct TaintFunction {
   void visitGEPInst(GetElementPtrInst *I);
   Value *visitAllocaInst(AllocaInst *I);
   void checkBounds(Value *Ptr, Instruction *Pos);
+  Value *visitIntrinsicCall(CallBase &CB);
 
 private:
   /// Returns the shadow value of an argument A.
   Value *getShadowForTLSArgument(Argument *A);
+  Value *unionShadows(Value* S1, Value *S2, Value *Op, Value *Size,
+                      Value *Op1, Value *Op2, Instruction *Pos);
 };
 
 class TaintVisitor : public InstVisitor<TaintVisitor> {
@@ -734,7 +737,7 @@ bool Taint::doInitialization(Module &M) {
       Int64Ty, Int64Ty };
   TaintTraceCmpFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCmpArgs, false);
-  Type *TaintTraceCondArgs[2] = { ShadowTy, IntegerType::get(*Ctx, 1) };
+  Type *TaintTraceCondArgs[2] = { ShadowTy, IntegerType::get(*Ctx, 8) };
   TaintTraceCondFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCondArgs, false);
   TaintTraceIndirectCallFnTy = FunctionType::get(
@@ -947,6 +950,7 @@ void Taint::initializeCallbackFunctions(Module &M) {
     AL = AL.addAttribute(M.getContext(), AttributeList::FunctionIndex,
                          Attribute::NoUnwind);
     AL = AL.addParamAttribute(M.getContext(), 0, Attribute::ZExt);
+    AL = AL.addParamAttribute(M.getContext(), 1, Attribute::ZExt);
     TaintTraceCondFn =
         Mod->getOrInsertFunction("__taint_trace_cond", TaintTraceCondFnTy, AL);
   }
@@ -1388,6 +1392,42 @@ Value *TaintFunction::combineBinaryOperatorShadows(BinaryOperator *BO,
   return Shadow;
 }
 
+Value *TaintFunction::unionShadows(Value *S1, Value *S2,
+                                   Value *Op, Value *Size,
+                                   Value *Op1, Value *Op2,
+                                   Instruction *Pos) {
+
+  IRBuilder<> IRB(Pos);
+  Type *Ty = Op1->getType();
+  // bitcast to integer before extending
+  if (Ty->isHalfTy())
+    Op1 = IRB.CreateBitCast(Op1, TT.Int16Ty);
+  else if (Ty->isFloatTy())
+    Op1 = IRB.CreateBitCast(Op1, TT.Int32Ty);
+  else if (Ty->isDoubleTy())
+    Op1 = IRB.CreateBitCast(Op1, TT.Int64Ty);
+  else if (Ty->isPointerTy())
+    Op1 = IRB.CreatePtrToInt(Op1, TT.Int64Ty);
+  Op1 = IRB.CreateZExtOrTrunc(Op1, TT.Int64Ty);
+  Ty = Op2->getType();
+  // bitcast to integer before extending
+  if (Ty->isHalfTy())
+    Op2 = IRB.CreateBitCast(Op2, TT.Int16Ty);
+  else if (Ty->isFloatTy())
+    Op2 = IRB.CreateBitCast(Op2, TT.Int32Ty);
+  else if (Ty->isDoubleTy())
+    Op2 = IRB.CreateBitCast(Op2, TT.Int64Ty);
+  else if (Ty->isPointerTy())
+    Op2 = IRB.CreatePtrToInt(Op2, TT.Int64Ty);
+  Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
+  // call
+  CallInst *Call = IRB.CreateCall(TT.TaintUnionFn, {S1, S2, Op, Size, Op1, Op2});
+  Call->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
+  Call->addParamAttr(0, Attribute::ZExt);
+  Call->addParamAttr(1, Attribute::ZExt);
+  return Call;
+}
+
 Value *TaintFunction::combineShadows(Value *V1, Value *V2,
                                      uint16_t op,
                                      Instruction *Pos) {
@@ -1414,7 +1454,6 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
   // FIXME: do not handle type larger than 64-bit
   if (size > 64) return TT.getZeroShadow(Pos);
 
-  IRBuilder<> IRB(Pos);
   if (CmpInst *CI = dyn_cast<CmpInst>(Pos)) { // for both icmp and fcmp
     size = DL.getTypeSizeInBits(CI->getOperand(0)->getType());
     // op should be predicate
@@ -1423,37 +1462,11 @@ Value *TaintFunction::combineShadows(Value *V1, Value *V2,
   Value *Op = ConstantInt::get(TT.Int16Ty, op);
   Value *Size = ConstantInt::get(TT.Int16Ty, size);
   Value *Op1 = Pos->getOperand(0);
-  Ty = Op1->getType();
-  // bitcast to integer before extending
-  if (Ty->isHalfTy())
-    Op1 = IRB.CreateBitCast(Op1, TT.Int16Ty);
-  else if (Ty->isFloatTy())
-    Op1 = IRB.CreateBitCast(Op1, TT.Int32Ty);
-  else if (Ty->isDoubleTy())
-    Op1 = IRB.CreateBitCast(Op1, TT.Int64Ty);
-  else if (Ty->isPointerTy())
-    Op1 = IRB.CreatePtrToInt(Op1, TT.Int64Ty);
-  Op1 = IRB.CreateZExtOrTrunc(Op1, TT.Int64Ty);
   Value *Op2 = ConstantInt::get(TT.Int64Ty, 0);
   if (Pos->getNumOperands() > 1) {
     Op2 = Pos->getOperand(1);
-    Ty = Op2->getType();
-    // bitcast to integer before extending
-    if (Ty->isHalfTy())
-      Op2 = IRB.CreateBitCast(Op2, TT.Int16Ty);
-    else if (Ty->isFloatTy())
-      Op2 = IRB.CreateBitCast(Op2, TT.Int32Ty);
-    else if (Ty->isDoubleTy())
-      Op2 = IRB.CreateBitCast(Op2, TT.Int64Ty);
-    else if (Ty->isPointerTy())
-      Op2 = IRB.CreatePtrToInt(Op2, TT.Int64Ty);
-    Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
   }
-  CallInst *Call = IRB.CreateCall(TT.TaintUnionFn, {V1, V2, Op, Size, Op1, Op2});
-  Call->addAttribute(AttributeList::ReturnIndex, Attribute::ZExt);
-  Call->addParamAttr(0, Attribute::ZExt);
-  Call->addParamAttr(1, Attribute::ZExt);
-  return Call;
+  return unionShadows(V1, V2, Op, Size, Op1, Op2, Pos);
 }
 
 Value *TaintFunction::combineCastInstShadows(CastInst *CI,
@@ -1655,7 +1668,7 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   // get operand
   Value *Cond = I->getCondition();
   Value *CondShadow = getShadow(Cond);
-  if (CondShadow == TT.ZeroShadow)
+  if (TT.isZeroShadow(CondShadow))
     return;
   unsigned size = DL.getTypeSizeInBits(Cond->getType());
   ConstantInt *Size = ConstantInt::get(TT.ShadowTy, size);
@@ -1712,7 +1725,7 @@ void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
       } else {
         // non-constant index, check if it's tainted
         Value *Shadow = getShadow(Index);
-        if (Shadow != TT.ZeroShadow) {
+        if (!TT.isZeroShadow(Shadow)) {
           Index = IRB.CreateZExtOrTrunc(Index, TT.Int64Ty);
           ConstantInt *Offset = ConstantInt::get(TT.Int64Ty, CurrentOffset);
           ConstantInt *ES = ConstantInt::get(TT.Int64Ty, DL.getTypeAllocSize(ETy));
@@ -1909,12 +1922,84 @@ void TaintVisitor::visitReturnInst(ReturnInst &RI) {
   }
 }
 
+Value* TaintFunction::visitIntrinsicCall(CallBase &CB) {
+  // filter types
+  Type *Ty = CB.getArgOperand(0)->getType();
+  if (Ty->isFloatingPointTy()) {
+    // check for FP
+    if (!ClTraceFP)
+      return TT.getZeroShadow(&CB);;
+  } else if (Ty->isVectorTy()) {
+      // FIXME: vector type
+    return TT.getZeroShadow(&CB);;
+  } else if (!Ty->isIntegerTy() && !Ty->isPointerTy()) {
+    // not FP and not vector and not int and not ptr?
+    errs() << "Unknown type: " << CB << "\n";
+    return TT.getZeroShadow(&CB);;
+  }
+
+  // filter size
+  auto &DL = CB.getModule()->getDataLayout();
+  uint64_t size = DL.getTypeSizeInBits(Ty);
+  // FIXME: do not handle type larger than 64-bit
+  if (size > 64) return TT.getZeroShadow(&CB);;
+
+  // check if any argument is symbolic/taint
+  bool NeedsInstrumentation = false;
+  for (unsigned i = 0; i < CB.getNumArgOperands(); ++i) {
+    Value *Shadow = getShadow(CB.getArgOperand(i));
+    if (!TT.isZeroShadow(Shadow)) {
+      NeedsInstrumentation = true;
+      break;
+    }
+  }
+  if (!NeedsInstrumentation) return TT.getZeroShadow(&CB);;
+
+  // instrumenting
+  Value *Op = ConstantInt::get(TT.Int16Ty, Instruction::VAArg);
+  Value *Size = ConstantInt::get(TT.Int16Ty, size);
+  Value *Op1 = CB.getArgOperand(0);
+  Value *Shadow1 = getShadow(Op1);
+  // XXX: abuse VAArg to trace additional args
+  for (unsigned i = 1; i < CB.getNumArgOperands(); ++i) {
+    Value *Op2 = CB.getArgOperand(i);
+    Value *Shadow2 = getShadow(Op2);
+    Shadow1 = unionShadows(Shadow1, Shadow2, Op, Size, Op1, Op2, &CB);
+    Op1 = ConstantInt::get(TT.Int64Ty, 0);
+  }
+  // Op2 is always the intrinsic ID
+  Value *Op2 = ConstantInt::get(TT.Int64Ty, F->getIntrinsicID());
+  Value *Shadow2 = TT.getZeroShadow(&CB);
+  Op = ConstantInt::get(TT.Int16Ty, Instruction::Call);
+  Size = ConstantInt::get(TT.Int16Ty, DL.getTypeSizeInBits(CB.getType()));
+  return unionShadows(Shadow1, Shadow2, Op, Size, Op1, Op2, &CB);
+}
+
 void TaintVisitor::visitCallBase(CallBase &CB) {
   Function *F = CB.getCalledFunction();
-  if ((F && F->isIntrinsic()) || CB.isInlineAsm()) {
-    // FIXME arguments
-    //visitOperandShadowInst(*CS.getInstruction());
-    //llvm::errs() << *(CS.getCalledValue()) << "\n";
+  if (CB.isInlineAsm()) {
+    // FIXME: inline asm
+    return;
+  }
+  if (F && F->isIntrinsic()) {
+    // filter some obvious ones
+    if (CB.getNumArgOperands() == 0 || CB.getType()->isVoidTy())
+      return;
+    StringRef FN = F->getName();
+    if (FN.startswith("llvm.call.") ||
+        FN.startswith("llvm.coro.") ||
+        FN.startswith("llvm.dbg.") ||
+        FN.startswith("llvm.eh.") ||
+        FN.startswith("llvm.experimental.") ||
+        FN.startswith("llvm.gc")  || // garbaage collection
+        FN.startswith("llvm.lifetime") ||
+        FN.startswith("llvm.objd.") ||
+        FN.startswith("llvm.va_") // varabile length
+        ) {
+      return;
+    }
+    Value *Shadow = TF.visitIntrinsicCall(CB);
+    TF.setShadow(&CB, Shadow);
     return;
   }
 
